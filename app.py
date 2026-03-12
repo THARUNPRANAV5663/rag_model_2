@@ -1,8 +1,9 @@
 # ════════════════════════════════════════════════════════════════════════════
-# Adolf's RAG — Production Conversational Chatbot
+# KSTP's RAG Model — Production Conversational Chatbot
 # Multi-source: PDF, Scanned PDF (OCR), CSV, TSV, Excel, URL
 # Stack: PyMuPDF, Tesseract, LangChain, ChromaDB, BM25,
 #        bge-base-en-v1.5, bge-reranker-large, Llama3 (Groq), Streamlit
+# Built by Tharun Pranav K S (KSTP)
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Standard Libraries ────────────────────────────────────────────────────────
@@ -44,27 +45,20 @@ from groq import Groq
 import streamlit as st
 
 # ── Environment ───────────────────────────────────────────────────────────────
-os.environ["USER_AGENT"] = "AdolfsRAG/1.0"
+os.environ["USER_AGENT"] = "KSTPs_RAG/1.0"
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — API KEY SETUP
 # ════════════════════════════════════════════════════════════════════════════
 
-# Loads API key from environment
-# Local  → reads from .env file
-# Streamlit → reads from Streamlit secrets
-
 try:
-    # ── Local testing — reads from .env file ──────────────────────────────────
     from dotenv import load_dotenv
     load_dotenv()
     GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 except:
-    # ── Streamlit deployment — reads from Streamlit secrets ───────────────────
     GROQ_API_KEY = st.secrets.get('GROQ_API_KEY')
 
-# ── Groq client ───────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 
@@ -74,44 +68,25 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 @st.cache_resource
 def load_models():
-    """
-    Loads embedding model and reranker once
-    Cached by Streamlit — not reloaded on every interaction
-    bge-base-en-v1.5  → stronger embeddings than MiniLM
-    bge-reranker-large → reranks retrieved chunks by relevance
-    """
     embedder = SentenceTransformer("BAAI/bge-base-en-v1.5")
     reranker = CrossEncoder("BAAI/bge-reranker-large")
     return embedder, reranker
 
 @st.cache_resource
 def load_chromadb():
-    """
-    Initializes ChromaDB client and collection once
-    Cached — not recreated on every interaction
-    """
     client     = chromadb.Client()
-    collection = client.get_or_create_collection(name="adolfs_rag")
+    collection = client.get_or_create_collection(name="kstps_rag")
     return client, collection
 
-
-# Load models and DB on startup
 embedder, reranker           = load_models()
 chroma_client, collection    = load_chromadb()
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — LOADER
-# Handles all source types: PDF, Scanned PDF, CSV, TSV, Excel, URL
 # ════════════════════════════════════════════════════════════════════════════
 
 def load_pdf(file_path):
-    """
-    Opens PDF page by page
-    If page has text → PyMuPDF extracts it directly
-    If page is blank (scanned) → Tesseract OCR reads image
-    Returns list of {text, page, source, extraction_method}
-    """
     doc   = fitz.open(file_path)
     pages = []
 
@@ -120,7 +95,6 @@ def load_pdf(file_path):
         text = page.get_text().strip()
 
         if not text:
-            # Page is an image — use OCR
             pix        = page.get_pixmap()
             img        = Image.open(io.BytesIO(pix.tobytes("png")))
             text       = pytesseract.image_to_string(img).strip()
@@ -140,17 +114,9 @@ def load_pdf(file_path):
 
 
 def load_tabular(file_path):
-    """
-    Auto detects CSV / TSV / Excel format
-    Converts each row into a natural language sentence
-    Example: "Row 1: country is India, sales is 1200, year is 2023."
-    Multi-sheet Excel — each sheet tagged separately
-    Returns list of {text, source, sheet, rows}
-    """
     ext    = os.path.splitext(file_path)[1].lower()
     chunks = []
 
-    # ── Detect format and load ─────────────────────────────────────────────────
     if ext == ".csv":
         sheets = {"Sheet1": pd.read_csv(file_path)}
     elif ext == ".tsv":
@@ -160,7 +126,6 @@ def load_tabular(file_path):
     else:
         return []
 
-    # ── Convert rows to sentences ─────────────────────────────────────────────
     for sheet_name, df in sheets.items():
         df = df.fillna("unknown")
         for i, row in df.iterrows():
@@ -177,17 +142,11 @@ def load_tabular(file_path):
 
 
 def load_url(url):
-    """
-    Scrapes webpage using LangChain WebBaseLoader
-    Cleans scraped content — removes nav, ads, scripts, footers
-    Returns list of {text, source}
-    """
     try:
         loader = WebBaseLoader(url)
         docs   = loader.load()
         raw    = " ".join([d.page_content for d in docs])
 
-        # ── Remove noise elements ──────────────────────────────────────────────
         soup = BeautifulSoup(raw, "html.parser")
         for tag in soup(["nav", "header", "footer",
                          "script", "style", "aside"]):
@@ -203,17 +162,14 @@ def load_url(url):
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — SECURITY CHECKS
-# File size limit, URL validation, prompt injection detection
 # ════════════════════════════════════════════════════════════════════════════
 
 def check_file_size(file_path, max_mb=20):
-    """Rejects files larger than 20MB"""
     size_mb = os.path.getsize(file_path) / (1024 * 1024)
     if size_mb > max_mb:
         raise ValueError(f"File too large: {size_mb:.1f}MB — max {max_mb}MB")
 
 def check_url(url):
-    """Blocks invalid or local URLs"""
     if not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL — must start with http:// or https://")
     blocked = ["localhost", "127.0.0.1", "0.0.0.0"]
@@ -221,10 +177,6 @@ def check_url(url):
         raise ValueError("Blocked URL")
 
 def check_prompt_injection(query):
-    """
-    Detects common prompt injection attempts
-    Blocks queries trying to override system instructions
-    """
     patterns = [
         "ignore previous instructions",
         "ignore all instructions",
@@ -244,21 +196,13 @@ def check_prompt_injection(query):
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — CHUNKER
-# Token based splitting with metadata tagging
 # ════════════════════════════════════════════════════════════════════════════
 
 def count_tokens(text, model="cl100k_base"):
-    """Counts tokens using tiktoken — same tokenizer as Llama3"""
     enc = tiktoken.get_encoding(model)
     return len(enc.encode(text))
 
 def chunk_documents(docs, chunk_size=512, overlap=50):
-    """
-    Splits each document into token based chunks
-    chunk_size = 512 tokens, overlap = 50 tokens
-    Overlap prevents cutting sentences at chunk boundaries
-    Each chunk keeps full metadata from loader
-    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size      = chunk_size,
         chunk_overlap   = overlap,
@@ -293,27 +237,17 @@ def chunk_documents(docs, chunk_size=512, overlap=50):
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 6 — EMBEDDER
-# Generates vectors and stores in ChromaDB + builds BM25 index
 # ════════════════════════════════════════════════════════════════════════════
 
-# Tracks processed files by hash — avoids reembedding same file
 processed_hashes = set()
-
-# BM25 index and chunks stored globally
 bm25_index  = None
 bm25_chunks = []
 
 def get_file_hash(file_path):
-    """MD5 hash of file — unique fingerprint to detect duplicates"""
     with open(file_path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
 
 def embed_and_store(chunks, file_hash=None):
-    """
-    Converts chunk text to vectors using bge-base-en-v1.5
-    Stores vectors + metadata in ChromaDB
-    Skips if file was already embedded (hash check)
-    """
     global bm25_index, bm25_chunks
 
     if file_hash and file_hash in processed_hashes:
@@ -333,10 +267,8 @@ def embed_and_store(chunks, file_hash=None):
         "tokens": int(c.get("tokens", 0)),
     } for c in chunks]
 
-    # Generate embeddings
     embeddings = embedder.encode(texts, show_progress_bar=False).tolist()
 
-    # Store in ChromaDB
     collection.add(
         ids        = ids,
         documents  = texts,
@@ -344,23 +276,19 @@ def embed_and_store(chunks, file_hash=None):
         metadatas  = metadatas
     )
 
-    # Build BM25 index
     bm25_chunks = chunks
     tokenized   = [c["text"].lower().split() for c in chunks]
     bm25_index  = BM25Okapi(tokenized)
 
-    # Mark file as processed
     if file_hash:
         processed_hashes.add(file_hash)
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 7 — RETRIEVER
-# Hybrid search (ChromaDB + BM25) → reranker → top 4 chunks
 # ════════════════════════════════════════════════════════════════════════════
 
 def vector_search(query, top_k=10):
-    """Semantic similarity search using ChromaDB"""
     query_embedding = embedder.encode([query]).tolist()
     results = collection.query(
         query_embeddings = query_embedding,
@@ -376,7 +304,6 @@ def vector_search(query, top_k=10):
     return chunks
 
 def bm25_search(query, top_k=10):
-    """Keyword search using BM25 — catches exact term matches"""
     if bm25_index is None:
         return []
     tokenized_query = query.lower().split()
@@ -399,11 +326,6 @@ def bm25_search(query, top_k=10):
     return chunks
 
 def rerank(query, chunks, top_k=4):
-    """
-    Reranks merged chunks using bge-reranker-large
-    Scores each chunk against query for true relevance
-    Returns top_k most relevant chunks
-    """
     if not chunks:
         return []
     pairs  = [[query, c["text"]] for c in chunks]
@@ -414,21 +336,12 @@ def rerank(query, chunks, top_k=4):
     return reranked[:top_k]
 
 def retrieve(query, top_k=4):
-    """
-    Master retrieval function
-    1. ChromaDB semantic search
-    2. BM25 keyword search
-    3. Merge + deduplicate
-    4. Rerank → top 4
-    """
     if collection.count() == 0:
         return []
 
-    # Hybrid search
     vector_results = vector_search(query, top_k=10)
     bm25_results   = bm25_search(query,   top_k=10)
 
-    # Merge + deduplicate
     seen, merged = set(), []
     for chunk in vector_results + bm25_results:
         text = chunk["text"].strip()
@@ -441,16 +354,9 @@ def retrieve(query, top_k=4):
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 8 — REWRITER
-# Rewrites vague queries using Llama3 for better retrieval
 # ════════════════════════════════════════════════════════════════════════════
 
 def rewrite_query(query, chat_history=[]):
-    """
-    Takes raw user query + last 3 messages
-    Llama3 rewrites it to be more specific and searchable
-    Falls back to original query if rewriting fails
-    Example: "cost?" → "What is the cost mentioned in the document?"
-    """
     history_text = ""
     if chat_history:
         for msg in chat_history[-3:]:
@@ -484,22 +390,16 @@ Rewrite this query:"""
         )
         return response.choices[0].message.content.strip()
     except:
-        return query    # fallback to original if rewriter fails
+        return query
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 9 — CHAIN
-# Connects everything: rewrite → retrieve → compress → Llama3 → answer
 # ════════════════════════════════════════════════════════════════════════════
 
-# API response cache — same query returns saved answer instantly
 query_cache = {}
 
 def compress_context(chunks, max_tokens=1500):
-    """
-    If total chunk tokens exceed limit — truncates proportionally
-    Prevents sending too much context to Llama3
-    """
     total = sum(c.get("tokens", 0) for c in chunks)
     if total <= max_tokens:
         return chunks
@@ -514,34 +414,56 @@ def compress_context(chunks, max_tokens=1500):
     return compressed
 
 def chat(query, memory):
-    """
-    Master chain function — full pipeline
-    query → security → rewrite → retrieve → compress → Llama3 → answer
-    memory: list of last 3 messages for conversational context
-    """
 
-    # ── Security — block prompt injection ─────────────────────────────────────
+    # ── Identity & FAQ — handle before RAG pipeline ───────────────────────────
+    q = query.lower().strip()
+
+    identity_triggers = ["who built you", "who made you", "who created you", "who developed you"]
+    what_triggers     = ["what are you", "what is this", "what is kstp", "are you chatgpt", "are you gpt"]
+    privacy_triggers  = ["store my data", "store my pdf", "send my data", "is my pdf safe",
+                         "data safe", "uploaded anywhere", "data privacy"]
+    capability_triggers = ["what can you do", "what do you support", "file types", "what files"]
+    memory_triggers   = ["remember previous", "remember chats", "chat history", "previous conversations"]
+    scope_triggers    = ["weather", "write me a poem", "who is elon", "who is modi",
+                         "tell me a joke", "general knowledge"]
+
+    if any(t in q for t in identity_triggers):
+        return "I was built by Tharun Pranav K S (KSTP). I am KSTP's RAG Model — a Retrieval-Augmented Generation chatbot.", []
+
+    if any(t in q for t in what_triggers):
+        return "I am KSTP's RAG Model, a Retrieval-Augmented Generation chatbot built by Tharun Pranav K S (KSTP). I am powered by Llama3 via Groq and am not ChatGPT or any OpenAI product.", []
+
+    if any(t in q for t in privacy_triggers):
+        return "Your files are completely safe. They are processed in session memory only and are never stored, saved, or sent anywhere. Once you close the session, everything is cleared.", []
+
+    if any(t in q for t in capability_triggers):
+        return "I can answer questions from PDFs (including scanned/OCR PDFs), Excel files, CSV, TSV files, and web URLs. Just upload your document and ask away!", []
+
+    if any(t in q for t in memory_triggers):
+        return "I remember the last 3 messages in our current conversation for context. I do not retain any memory across sessions.", []
+
+    # ── Security ──────────────────────────────────────────────────────────────
     try:
         check_prompt_injection(query)
     except ValueError as e:
         return str(e), []
 
-    # ── No data check ──────────────────────────────────────────────────────────
+    # ── No data check ─────────────────────────────────────────────────────────
     if collection.count() == 0:
         return "Please upload a document or enter a URL first.", []
 
-    # ── Rewrite query for better retrieval ────────────────────────────────────
+    # ── Rewrite query ─────────────────────────────────────────────────────────
     rewritten = rewrite_query(query, chat_history=memory)
 
-    # ── Retrieve top 4 most relevant chunks ───────────────────────────────────
+    # ── Retrieve ──────────────────────────────────────────────────────────────
     chunks = retrieve(rewritten, top_k=4)
     if not chunks:
         return "I couldn't find relevant information in the provided documents.", []
 
-    # ── Compress context if too large ─────────────────────────────────────────
+    # ── Compress ──────────────────────────────────────────────────────────────
     chunks = compress_context(chunks, max_tokens=1500)
 
-    # ── Cache check — return saved answer if same query seen before ───────────
+    # ── Cache check ───────────────────────────────────────────────────────────
     cache_key = hashlib.md5(
         (rewritten + "".join([c["text"][:50] for c in chunks])).encode()
     ).hexdigest()
@@ -549,7 +471,7 @@ def chat(query, memory):
     if cache_key in query_cache:
         return query_cache[cache_key], chunks
 
-    # ── Build context string from retrieved chunks ────────────────────────────
+    # ── Build context ─────────────────────────────────────────────────────────
     context = "\n\n".join([
         f"[Source: {c['metadata']['source']} | "
         f"Page: {c['metadata']['page']} | "
@@ -557,21 +479,27 @@ def chat(query, memory):
         for c in chunks
     ])
 
-    # ── System prompt for Llama3 ───────────────────────────────────────────────
-    system_prompt = """You are Adolf's RAG — a helpful conversational assistant.
-Answer questions based ONLY on the provided document context.
-If the answer is not found in the context say:
-"I couldn't find that information in the provided documents."
-Be conversational, clear and concise.
-Always mention the source and page number in your answer."""
+    # ── System prompt ─────────────────────────────────────────────────────────
+    system_prompt = """You are KSTP's RAG Model — a helpful conversational assistant built by Tharun Pranav K S (KSTP).
 
-    # ── Build full message list ────────────────────────────────────────────────
+Answer questions based ONLY on the provided document context.
+If the answer is not found in the context, say: "I couldn't find that information in the provided documents."
+Be conversational, clear and concise.
+Always mention the source and page number in your answer.
+
+If asked who built you: "I was built by Tharun Pranav K S (KSTP)."
+If asked what you are: "I am KSTP's RAG Model, powered by Llama3 via Groq."
+If asked about data privacy: "Your files are processed in memory only and never stored or sent anywhere."
+If asked about capabilities: "I support PDF, scanned PDF (OCR), Excel, CSV, TSV, and URLs."
+"""
+
+    # ── Build messages ────────────────────────────────────────────────────────
     messages  = [{"role": "system", "content": system_prompt}]
-    messages += memory      # last 3 conversation messages
+    messages += memory
     messages += [{"role": "user",
                   "content": f"Context:\n{context}\n\nQuestion: {rewritten}"}]
 
-    # ── Call Llama3 via Groq ───────────────────────────────────────────────────
+    # ── Call Llama3 ───────────────────────────────────────────────────────────
     try:
         response = groq_client.chat.completions.create(
             model       = "llama-3.3-70b-versatile",
@@ -583,57 +511,47 @@ Always mention the source and page number in your answer."""
     except Exception as e:
         return f"LLM error: {e}", []
 
-    # ── Save to cache ──────────────────────────────────────────────────────────
     query_cache[cache_key] = answer
-
     return answer, chunks
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SECTION 10 — STREAMLIT UI
-# Chatbot interface — upload docs, ask questions, see answers with citations
 # ════════════════════════════════════════════════════════════════════════════
 
 def main():
 
     st.set_page_config(
-        page_title = "Adolf's RAG",
+        page_title = "KSTP's RAG Model",
         page_icon  = "🤖",
         layout     = "wide"
     )
 
-    st.title("🤖 Adolf's RAG")
-    st.caption("Multi-source conversational chatbot — PDF, Excel, CSV, URL")
+    st.title("🤖 KSTP's RAG Model")
+    st.caption("Multi-source conversational chatbot — PDF, Excel, CSV, URL | Built by Tharun Pranav K S")
 
-    # ── Session state — persists across interactions ───────────────────────────
     if "chat_history"  not in st.session_state:
-        st.session_state.chat_history  = []   # full chat for display
+        st.session_state.chat_history  = []
     if "memory"        not in st.session_state:
-        st.session_state.memory        = []   # last 3 messages for LLM
+        st.session_state.memory        = []
     if "files_loaded"  not in st.session_state:
-        st.session_state.files_loaded  = []   # list of loaded source names
+        st.session_state.files_loaded  = []
 
-    # ── Sidebar — source upload ────────────────────────────────────────────────
     with st.sidebar:
         st.header("📁 Upload Sources")
 
-        # File uploader
         uploaded_files = st.file_uploader(
             "Upload PDF, CSV, TSV, Excel",
             type    = ["pdf", "csv", "tsv", "xlsx", "xls"],
             accept_multiple_files = True
         )
 
-        # URL input
         url_input = st.text_input("Or enter a URL:", placeholder="https://...")
 
-        # Process button
         if st.button("⚡ Process Sources", use_container_width=True):
             all_docs = []
 
-            # ── Process uploaded files ─────────────────────────────────────────
             for uploaded_file in uploaded_files:
-                # Save to temp file
                 temp_path = f"/tmp/{uploaded_file.name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
@@ -658,7 +576,6 @@ def main():
                 except ValueError as e:
                     st.error(str(e))
 
-            # ── Process URL ────────────────────────────────────────────────────
             if url_input:
                 try:
                     check_url(url_input)
@@ -670,37 +587,31 @@ def main():
                 except ValueError as e:
                     st.error(str(e))
 
-            # ── Chunk + Embed all sources ──────────────────────────────────────
             if all_docs:
                 with st.spinner("Chunking and embedding..."):
                     chunks = chunk_documents(all_docs)
                     embed_and_store(chunks)
                 st.success(f"✅ {len(chunks)} chunks embedded and ready!")
 
-        # ── Show loaded sources ────────────────────────────────────────────────
         if st.session_state.files_loaded:
             st.divider()
             st.subheader("📚 Loaded Sources")
             for src in st.session_state.files_loaded:
                 st.write(f"• {src}")
 
-        # ── Clear everything ───────────────────────────────────────────────────
         if st.button("🗑️ Clear All", use_container_width=True):
             st.session_state.chat_history = []
             st.session_state.memory       = []
             st.session_state.files_loaded = []
             query_cache.clear()
-            chroma_client.delete_collection("adolfs_rag")
+            chroma_client.delete_collection("kstps_rag")
             st.rerun()
 
-    # ── Main chat area ─────────────────────────────────────────────────────────
     st.divider()
 
-    # Display chat history
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            # Show source citations for assistant messages
             if msg["role"] == "assistant" and msg.get("sources"):
                 with st.expander("📌 Sources"):
                     for src in msg["sources"]:
@@ -710,28 +621,23 @@ def main():
                             f"Sheet: {src['metadata']['sheet']}"
                         )
 
-    # ── Chat input ─────────────────────────────────────────────────────────────
     user_input = st.chat_input("Ask anything about your documents...")
 
     if user_input:
-        # Show user message
         with st.chat_message("user"):
             st.write(user_input)
 
-        # Add to chat history
         st.session_state.chat_history.append({
             "role":    "user",
             "content": user_input
         })
 
-        # Generate answer
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 answer, sources = chat(user_input, st.session_state.memory)
 
             st.write(answer)
 
-            # Show source citations
             if sources:
                 with st.expander("📌 Sources"):
                     for src in sources:
@@ -741,19 +647,16 @@ def main():
                             f"Sheet: {src['metadata']['sheet']}"
                         )
 
-        # Update chat history with answer + sources
         st.session_state.chat_history.append({
             "role":    "assistant",
             "content": answer,
             "sources": sources
         })
 
-        # Update memory — keep last 3 messages only (k=3)
         st.session_state.memory.append({"role": "user",      "content": user_input})
         st.session_state.memory.append({"role": "assistant", "content": answer})
-        st.session_state.memory = st.session_state.memory[-6:]  # 3 user + 3 assistant
+        st.session_state.memory = st.session_state.memory[-6:]
 
 
-# ── Run app ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     main()
