@@ -1,51 +1,38 @@
 # ════════════════════════════════════════════════════════════════════════════
-# KSTP's RAG Model — Production Conversational Chatbot
+# Retriva — Production Conversational Chatbot
 # Multi-source: PDF, Scanned PDF (OCR), CSV, TSV, Excel, URL
 # Stack: PyMuPDF, Tesseract, LangChain, ChromaDB, BM25,
 #        bge-base-en-v1.5, bge-reranker-large, Llama3 (Groq), Streamlit
-# Built by Tharun Pranav K S (KSTP)
+# Built by Tharun Pranav K S
 # ════════════════════════════════════════════════════════════════════════════
 
-# ── Standard Libraries ────────────────────────────────────────────────────────
 import os
 import io
 import hashlib
 from collections import deque
 
-# ── Data Processing ───────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
 
-# ── PDF Processing ────────────────────────────────────────────────────────────
-import fitz                                         # PyMuPDF — digital PDF
-import pytesseract                                  # OCR — scanned PDF
+import fitz
+import pytesseract
 from PIL import Image
 
-# ── Web Scraping ──────────────────────────────────────────────────────────────
 from bs4 import BeautifulSoup
 from langchain_community.document_loaders import WebBaseLoader
 
-# ── Text Chunking ─────────────────────────────────────────────────────────────
 import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# ── Embeddings + Reranker ─────────────────────────────────────────────────────
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-# ── Vector Store ──────────────────────────────────────────────────────────────
 import chromadb
-
-# ── Keyword Search ────────────────────────────────────────────────────────────
 from rank_bm25 import BM25Okapi
-
-# ── LLM ───────────────────────────────────────────────────────────────────────
 from groq import Groq
 
-# ── Streamlit UI ──────────────────────────────────────────────────────────────
 import streamlit as st
 
-# ── Environment ───────────────────────────────────────────────────────────────
-os.environ["USER_AGENT"] = "KSTPs_RAG/1.0"
+os.environ["USER_AGENT"] = "Retriva/1.0"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -63,7 +50,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SECTION 2 — MODEL LOADING (cached — loads only once)
+# SECTION 2 — MODEL LOADING
 # ════════════════════════════════════════════════════════════════════════════
 
 @st.cache_resource
@@ -75,11 +62,11 @@ def load_models():
 @st.cache_resource
 def load_chromadb():
     client     = chromadb.Client()
-    collection = client.get_or_create_collection(name="kstps_rag")
+    collection = client.get_or_create_collection(name="retriva")
     return client, collection
 
-embedder, reranker           = load_models()
-chroma_client, collection    = load_chromadb()
+embedder, reranker        = load_models()
+chroma_client, collection = load_chromadb()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -89,11 +76,9 @@ chroma_client, collection    = load_chromadb()
 def load_pdf(file_path):
     doc   = fitz.open(file_path)
     pages = []
-
     for page_num in range(len(doc)):
         page = doc[page_num]
         text = page.get_text().strip()
-
         if not text:
             pix        = page.get_pixmap()
             img        = Image.open(io.BytesIO(pix.tobytes("png")))
@@ -101,7 +86,6 @@ def load_pdf(file_path):
             extraction = "ocr"
         else:
             extraction = "pymupdf"
-
         if text:
             pages.append({
                 "text":       text,
@@ -109,14 +93,12 @@ def load_pdf(file_path):
                 "source":     os.path.basename(file_path),
                 "extraction": extraction
             })
-
     return pages
 
 
 def load_tabular(file_path):
     ext    = os.path.splitext(file_path)[1].lower()
     chunks = []
-
     if ext == ".csv":
         sheets = {"Sheet1": pd.read_csv(file_path)}
     elif ext == ".tsv":
@@ -125,7 +107,6 @@ def load_tabular(file_path):
         sheets = pd.read_excel(file_path, sheet_name=None)
     else:
         return []
-
     for sheet_name, df in sheets.items():
         df = df.fillna("unknown")
         for i, row in df.iterrows():
@@ -137,7 +118,6 @@ def load_tabular(file_path):
                 "sheet":  sheet_name,
                 "rows":   str(i + 1)
             })
-
     return chunks
 
 
@@ -146,22 +126,18 @@ def load_url(url):
         loader = WebBaseLoader(url)
         docs   = loader.load()
         raw    = " ".join([d.page_content for d in docs])
-
-        soup = BeautifulSoup(raw, "html.parser")
-        for tag in soup(["nav", "header", "footer",
-                         "script", "style", "aside"]):
+        soup   = BeautifulSoup(raw, "html.parser")
+        for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
             tag.decompose()
-
         clean_text = soup.get_text(separator=" ", strip=True)
         return [{"text": clean_text, "source": url}]
-
     except Exception as e:
         st.error(f"URL load failed: {e}")
         return []
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — SECURITY CHECKS
+# SECTION 4 — SECURITY
 # ════════════════════════════════════════════════════════════════════════════
 
 def check_file_size(file_path, max_mb=20):
@@ -178,20 +154,14 @@ def check_url(url):
 
 def check_prompt_injection(query):
     patterns = [
-        "ignore previous instructions",
-        "ignore all instructions",
-        "you are now",
-        "forget everything",
-        "act as",
-        "jailbreak",
-        "disregard",
-        "override",
-        "system prompt",
+        "ignore previous instructions", "ignore all instructions",
+        "you are now", "forget everything", "act as",
+        "jailbreak", "disregard", "override", "system prompt",
     ]
     query_lower = query.lower()
     for pattern in patterns:
         if pattern in query_lower:
-            raise ValueError(f"Blocked: potential prompt injection detected.")
+            raise ValueError("Blocked: potential prompt injection detected.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -209,17 +179,13 @@ def chunk_documents(docs, chunk_size=512, overlap=50):
         length_function = count_tokens,
         separators      = ["\n\n", "\n", ".", " ", ""]
     )
-
     all_chunks  = []
     chunk_index = 0
-
     for doc in docs:
         text = doc.get("text", "").strip()
         if not text:
             continue
-
         splits = splitter.split_text(text)
-
         for i, chunk_text in enumerate(splits):
             all_chunks.append({
                 "text":        chunk_text,
@@ -231,7 +197,6 @@ def chunk_documents(docs, chunk_size=512, overlap=50):
                 "rows":        doc.get("rows",   None),
             })
             chunk_index += 1
-
     return all_chunks
 
 
@@ -249,37 +214,25 @@ def get_file_hash(file_path):
 
 def embed_and_store(chunks, file_hash=None):
     global bm25_index, bm25_chunks
-
     if file_hash and file_hash in processed_hashes:
         st.info("File already processed — skipping reembedding")
         return
-
     if not chunks:
         return
-
-    texts      = [c["text"] for c in chunks]
-    ids        = [f"chunk_{c['chunk_index']}" for c in chunks]
-    metadatas  = [{
+    texts     = [c["text"] for c in chunks]
+    ids       = [f"chunk_{c['chunk_index']}" for c in chunks]
+    metadatas = [{
         "source": str(c.get("source", "unknown")),
         "page":   str(c.get("page")  or ""),
         "sheet":  str(c.get("sheet") or ""),
         "rows":   str(c.get("rows")  or ""),
         "tokens": int(c.get("tokens", 0)),
     } for c in chunks]
-
     embeddings = embedder.encode(texts, show_progress_bar=False).tolist()
-
-    collection.add(
-        ids        = ids,
-        documents  = texts,
-        embeddings = embeddings,
-        metadatas  = metadatas
-    )
-
+    collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
     bm25_chunks = chunks
     tokenized   = [c["text"].lower().split() for c in chunks]
     bm25_index  = BM25Okapi(tokenized)
-
     if file_hash:
         processed_hashes.add(file_hash)
 
@@ -291,8 +244,8 @@ def embed_and_store(chunks, file_hash=None):
 def vector_search(query, top_k=10):
     query_embedding = embedder.encode([query]).tolist()
     results = collection.query(
-        query_embeddings = query_embedding,
-        n_results        = min(top_k, collection.count())
+        query_embeddings=query_embedding,
+        n_results=min(top_k, collection.count())
     )
     chunks = []
     for i in range(len(results["ids"][0])):
@@ -332,23 +285,19 @@ def rerank(query, chunks, top_k=4):
     scores = reranker.predict(pairs)
     for i, chunk in enumerate(chunks):
         chunk["rerank_score"] = float(scores[i])
-    reranked = sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)
-    return reranked[:top_k]
+    return sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
 
 def retrieve(query, top_k=4):
     if collection.count() == 0:
         return []
-
     vector_results = vector_search(query, top_k=10)
     bm25_results   = bm25_search(query,   top_k=10)
-
     seen, merged = set(), []
     for chunk in vector_results + bm25_results:
         text = chunk["text"].strip()
         if text not in seen:
             seen.add(text)
             merged.append(chunk)
-
     return rerank(query, merged, top_k=top_k)
 
 
@@ -394,7 +343,83 @@ Rewrite this query:"""
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SECTION 9 — CHAIN
+# SECTION 9 — FAQ HANDLER
+# Catches identity, privacy, capability questions before RAG pipeline
+# ════════════════════════════════════════════════════════════════════════════
+
+FAQ_TRIGGERS = {
+    "identity": {
+        "keywords": [
+            "who are you", "who r u", "who ru", "who are u", "whos this",
+            "who's this", "who built you", "who made you", "who created you",
+            "who developed you", "introduce yourself", "tell me about yourself",
+            "what are you", "what is this", "what is retriva", "what r u",
+            "are you chatgpt", "are you gpt", "are you ai", "are you a bot",
+            "are you human", "are you real", "what kind of ai", "which ai",
+            "what model are you", "what llm", "who is kstp", "what is kstp",
+            "tell me about you", "about you", "about yourself",
+        ],
+        "answer": (
+            "Hey! I'm **Retriva** 👋 — a smart document chatbot built by **Tharun Pranav K S**.\n\n"
+            "I'm not ChatGPT or any OpenAI product. I'm powered by **Llama3 (via Groq)** "
+            "with hybrid retrieval (semantic + keyword search) and a reranker under the hood.\n\n"
+            "Upload a PDF, Excel, CSV, or paste a URL — and I'll answer anything from it. Let's go! 🚀"
+        )
+    },
+    "privacy": {
+        "keywords": [
+            "store my data", "store my pdf", "save my data", "send my data",
+            "is my pdf safe", "data safe", "uploaded anywhere", "data privacy",
+            "do you collect", "do you save", "is it safe", "safe to upload",
+            "where does my data go", "who sees my data", "confidential",
+            "privacy", "secure", "trust you",
+        ],
+        "answer": (
+            "Your data is **completely safe** 🔒\n\n"
+            "Everything you upload is processed **in-memory only** during your session. "
+            "Nothing is saved to disk, sent to any external server, or stored anywhere. "
+            "Once you close the session, it's all gone. You can safely upload confidential documents!"
+        )
+    },
+    "capability": {
+        "keywords": [
+            "what can you do", "what do you support", "file types", "what files",
+            "can you read pdf", "can you read excel", "supported formats",
+            "how does this work", "how do you work", "what's your purpose",
+            "what is your purpose", "how to use", "get started", "help",
+        ],
+        "answer": (
+            "Here's what I can do 💡\n\n"
+            "📄 **PDFs** — digital & scanned (OCR supported)\n"
+            "📊 **Excel** — .xlsx, .xls (multi-sheet)\n"
+            "📋 **CSV / TSV** — tabular data\n"
+            "🌐 **URLs** — scrape and answer from any webpage\n\n"
+            "Just upload your file or paste a URL, hit **⚡ Process Sources**, and ask me anything!"
+        )
+    },
+    "memory": {
+        "keywords": [
+            "remember previous", "remember chats", "chat history",
+            "previous conversations", "do you remember", "your memory",
+        ],
+        "answer": (
+            "I remember the last **3 messages** in our current conversation for context. "
+            "I don't retain any memory across sessions — each session starts fresh."
+        )
+    },
+}
+
+def check_faq(query):
+    """Returns FAQ answer if query matches any trigger, else None."""
+    q = query.lower().strip()
+    for category, data in FAQ_TRIGGERS.items():
+        if any(keyword in q for keyword in data["keywords"]):
+            return data["answer"]
+    return None
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SECTION 10 — CHAIN
 # ════════════════════════════════════════════════════════════════════════════
 
 query_cache = {}
@@ -415,32 +440,10 @@ def compress_context(chunks, max_tokens=1500):
 
 def chat(query, memory):
 
-    # ── Identity & FAQ — handle before RAG pipeline ───────────────────────────
-    q = query.lower().strip()
-
-    identity_triggers = ["who built you", "who made you", "who created you", "who developed you"]
-    what_triggers     = ["what are you", "what is this", "what is kstp", "are you chatgpt", "are you gpt"]
-    privacy_triggers  = ["store my data", "store my pdf", "send my data", "is my pdf safe",
-                         "data safe", "uploaded anywhere", "data privacy"]
-    capability_triggers = ["what can you do", "what do you support", "file types", "what files"]
-    memory_triggers   = ["remember previous", "remember chats", "chat history", "previous conversations"]
-    scope_triggers    = ["weather", "write me a poem", "who is elon", "who is modi",
-                         "tell me a joke", "general knowledge"]
-
-    if any(t in q for t in identity_triggers):
-        return "I was built by Tharun Pranav K S (KSTP). I am KSTP's RAG Model — a Retrieval-Augmented Generation chatbot.", []
-
-    if any(t in q for t in what_triggers):
-        return "I am KSTP's RAG Model, a Retrieval-Augmented Generation chatbot built by Tharun Pranav K S (KSTP). I am powered by Llama3 via Groq and am not ChatGPT or any OpenAI product.", []
-
-    if any(t in q for t in privacy_triggers):
-        return "Your files are completely safe. They are processed in session memory only and are never stored, saved, or sent anywhere. Once you close the session, everything is cleared.", []
-
-    if any(t in q for t in capability_triggers):
-        return "I can answer questions from PDFs (including scanned/OCR PDFs), Excel files, CSV, TSV files, and web URLs. Just upload your document and ask away!", []
-
-    if any(t in q for t in memory_triggers):
-        return "I remember the last 3 messages in our current conversation for context. I do not retain any memory across sessions.", []
+    # ── FAQ check — before RAG pipeline ───────────────────────────────────────
+    faq_answer = check_faq(query)
+    if faq_answer:
+        return faq_answer, []
 
     # ── Security ──────────────────────────────────────────────────────────────
     try:
@@ -450,9 +453,12 @@ def chat(query, memory):
 
     # ── No data check ─────────────────────────────────────────────────────────
     if collection.count() == 0:
-        return "Please upload a document or enter a URL first.", []
+        return (
+            "No documents loaded yet! Please upload a PDF, Excel, CSV, or enter a URL first.\n\n"
+            "Not sure how to start? Ask me **'how to use'** 😊"
+        ), []
 
-    # ── Rewrite query ─────────────────────────────────────────────────────────
+    # ── Rewrite ───────────────────────────────────────────────────────────────
     rewritten = rewrite_query(query, chat_history=memory)
 
     # ── Retrieve ──────────────────────────────────────────────────────────────
@@ -463,15 +469,14 @@ def chat(query, memory):
     # ── Compress ──────────────────────────────────────────────────────────────
     chunks = compress_context(chunks, max_tokens=1500)
 
-    # ── Cache check ───────────────────────────────────────────────────────────
+    # ── Cache ─────────────────────────────────────────────────────────────────
     cache_key = hashlib.md5(
         (rewritten + "".join([c["text"][:50] for c in chunks])).encode()
     ).hexdigest()
-
     if cache_key in query_cache:
         return query_cache[cache_key], chunks
 
-    # ── Build context ─────────────────────────────────────────────────────────
+    # ── Context ───────────────────────────────────────────────────────────────
     context = "\n\n".join([
         f"[Source: {c['metadata']['source']} | "
         f"Page: {c['metadata']['page']} | "
@@ -480,26 +485,16 @@ def chat(query, memory):
     ])
 
     # ── System prompt ─────────────────────────────────────────────────────────
-    system_prompt = """You are KSTP's RAG Model — a helpful conversational assistant built by Tharun Pranav K S (KSTP).
-
+    system_prompt = """You are Retriva — a smart document chatbot built by Tharun Pranav K S.
 Answer questions based ONLY on the provided document context.
 If the answer is not found in the context, say: "I couldn't find that information in the provided documents."
 Be conversational, clear and concise.
-Always mention the source and page number in your answer.
+Always mention the source and page number in your answer."""
 
-If asked who built you: "I was built by Tharun Pranav K S (KSTP)."
-If asked what you are: "I am KSTP's RAG Model, powered by Llama3 via Groq."
-If asked about data privacy: "Your files are processed in memory only and never stored or sent anywhere."
-If asked about capabilities: "I support PDF, scanned PDF (OCR), Excel, CSV, TSV, and URLs."
-"""
-
-    # ── Build messages ────────────────────────────────────────────────────────
     messages  = [{"role": "system", "content": system_prompt}]
     messages += memory
-    messages += [{"role": "user",
-                  "content": f"Context:\n{context}\n\nQuestion: {rewritten}"}]
+    messages += [{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {rewritten}"}]
 
-    # ── Call Llama3 ───────────────────────────────────────────────────────────
     try:
         response = groq_client.chat.completions.create(
             model       = "llama-3.3-70b-versatile",
@@ -516,26 +511,26 @@ If asked about capabilities: "I support PDF, scanned PDF (OCR), Excel, CSV, TSV,
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SECTION 10 — STREAMLIT UI
+# SECTION 11 — STREAMLIT UI
 # ════════════════════════════════════════════════════════════════════════════
 
 def main():
 
     st.set_page_config(
-        page_title = "KSTP's RAG Model",
-        page_icon  = "🤖",
+        page_title = "Retriva",
+        page_icon  = "🔍",
         layout     = "wide"
     )
 
-    st.title("🤖 KSTP's RAG Model")
-    st.caption("Multi-source conversational chatbot — PDF, Excel, CSV, URL | Built by Tharun Pranav K S")
+    st.title("🔍 Retriva")
+    st.caption("Smart document chatbot — PDF, Excel, CSV, URL | Built by Tharun Pranav K S")
 
-    if "chat_history"  not in st.session_state:
-        st.session_state.chat_history  = []
-    if "memory"        not in st.session_state:
-        st.session_state.memory        = []
-    if "files_loaded"  not in st.session_state:
-        st.session_state.files_loaded  = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "memory" not in st.session_state:
+        st.session_state.memory = []
+    if "files_loaded" not in st.session_state:
+        st.session_state.files_loaded = []
 
     with st.sidebar:
         st.header("📁 Upload Sources")
@@ -555,12 +550,10 @@ def main():
                 temp_path = f"/tmp/{uploaded_file.name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
-
                 try:
                     check_file_size(temp_path)
                     file_hash = get_file_hash(temp_path)
                     ext       = os.path.splitext(uploaded_file.name)[1].lower()
-
                     with st.spinner(f"Loading {uploaded_file.name}..."):
                         if ext == ".pdf":
                             docs = load_pdf(temp_path)
@@ -568,11 +561,9 @@ def main():
                             docs = load_tabular(temp_path)
                         else:
                             docs = []
-
                     all_docs.extend(docs)
                     st.session_state.files_loaded.append(uploaded_file.name)
                     st.success(f"✅ {uploaded_file.name} loaded")
-
                 except ValueError as e:
                     st.error(str(e))
 
@@ -604,7 +595,7 @@ def main():
             st.session_state.memory       = []
             st.session_state.files_loaded = []
             query_cache.clear()
-            chroma_client.delete_collection("kstps_rag")
+            chroma_client.delete_collection("retriva")
             st.rerun()
 
     st.divider()
@@ -627,17 +618,12 @@ def main():
         with st.chat_message("user"):
             st.write(user_input)
 
-        st.session_state.chat_history.append({
-            "role":    "user",
-            "content": user_input
-        })
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
 
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 answer, sources = chat(user_input, st.session_state.memory)
-
             st.write(answer)
-
             if sources:
                 with st.expander("📌 Sources"):
                     for src in sources:
