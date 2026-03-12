@@ -1,0 +1,13 @@
+langchain
+langchain-community
+langchain-groq
+chromadb
+sentence-transformers
+rank-bm25
+pymupdf
+pytesseract
+playwright
+tiktoken
+streamlit
+python-dotenv
+groq
