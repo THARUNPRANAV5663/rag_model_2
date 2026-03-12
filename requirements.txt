@@ -11,3 +11,6 @@ tiktoken
 streamlit
 python-dotenv
 groq
+beautifulsoup4
+requests
+lxml
