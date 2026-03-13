@@ -360,9 +360,10 @@ def clean_source_name(source):
     """Strip session ID prefix from temp filenames for clean display.
     e.g. '8beb1509201c4036_62ec1d26_Resume.pdf' → 'Resume.pdf'
     """
-    # Remove leading hex session prefix patterns like 'abc123_deadbeef_'
     cleaned = re.sub(r'^[a-f0-9]{8,}_[a-f0-9]{6,}_', '', source)
     return cleaned
+
+def get_file_hash(file_path):
     """Stream file in 4KB chunks — prevents RAM spike on large files."""
     hash_md5 = hashlib.md5()
     with open(file_path, "rb") as f:
