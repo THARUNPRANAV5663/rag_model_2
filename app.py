@@ -549,11 +549,20 @@ FAQ_TRIGGERS = [
 ]
 
 def check_faq(query):
-    """Returns (category, answer) if query matches any trigger, else (None, None)."""
+    """Returns (category, answer) if query matches any trigger, else (None, None).
+    Uses word-boundary matching to avoid false positives like 'hi' in 'hiring'."""
+    import re
     q = query.lower().strip()
     for faq in FAQ_TRIGGERS:
-        if any(keyword in q for keyword in faq["keywords"]):
-            return faq["category"], faq["answer"]
+        for keyword in faq["keywords"]:
+            # Use word boundary for short keywords (≤4 chars) to avoid substring false positives
+            if len(keyword) <= 4:
+                pattern = r'\b' + re.escape(keyword) + r'\b'
+                if re.search(pattern, q):
+                    return faq["category"], faq["answer"]
+            else:
+                if keyword in q:
+                    return faq["category"], faq["answer"]
     return None, None
 
 
@@ -966,7 +975,10 @@ def main():
             st.divider()
             st.subheader("📚 Loaded Sources")
             for src in st.session_state.files_loaded:
-                st.write(f"• {src}")
+                if src.startswith("http"):
+                    st.markdown(f"🌐 [{src[:40]}...]({src})" if len(src) > 40 else f"🌐 [{src}]({src})")
+                else:
+                    st.markdown(f"📄 {src}")
 
         if st.button("🗑️ Clear All", use_container_width=True):
             reset_all()
@@ -999,12 +1011,13 @@ def main():
     st.divider()
 
     # ── Session expired banner ────────────────────────────────────────────────
-    _, _col = get_collection()
-    if st.session_state.get("files_loaded") and _col.count() == 0:
-        # Collection empty but files_loaded has entries = session expired
-        # Clear stale file list so UI doesn't show ghost files
-        st.session_state.files_loaded = []
-        st.warning("⏰ **Session expired** — please re-upload your files and hit ⚡ Process Sources to continue.")
+    try:
+        _, _col = get_collection()
+        if st.session_state.get("files_loaded") and _col.count() == 0:
+            st.session_state.files_loaded = []
+            st.warning("⏰ **Session expired** — please re-upload your files and hit ⚡ Process Sources to continue.")
+    except Exception:
+        pass
 
     for msg in st.session_state.chat_history:
         avatar = USER_AVATAR if msg["role"] == "user" else RETRIVA_AVATAR
