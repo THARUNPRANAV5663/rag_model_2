@@ -244,8 +244,9 @@ def embed_and_store(chunks, file_hash=None):
         return
     if not chunks:
         return
+    # Always get fresh collection reference to avoid stale cache issues
+    _, fresh_collection = load_chromadb()
     texts     = [c["text"] for c in chunks]
-    # Use content hash as ID — guarantees no duplicates even on reprocess
     ids       = [hashlib.md5(c["text"].encode()).hexdigest() for c in chunks]
     metadatas = [{
         "source": str(c.get("source", "unknown")),
@@ -255,9 +256,7 @@ def embed_and_store(chunks, file_hash=None):
         "tokens": int(c.get("tokens", 0)),
     } for c in chunks]
     embeddings = embedder.encode(texts, show_progress_bar=False).tolist()
-    # upsert = insert if new, update if exists — never crashes on duplicates
-    collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
-    # Append to bm25 instead of replacing — supports multiple files
+    fresh_collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
     bm25_chunks += chunks
     tokenized   = [c["text"].lower().split() for c in bm25_chunks]
     bm25_index  = BM25Okapi(tokenized)
@@ -270,10 +269,11 @@ def embed_and_store(chunks, file_hash=None):
 # ════════════════════════════════════════════════════════════════════════════
 
 def vector_search(query, top_k=10):
+    _, fresh_collection = load_chromadb()
     query_embedding = embedder.encode([query]).tolist()
-    results = collection.query(
+    results = fresh_collection.query(
         query_embeddings=query_embedding,
-        n_results=min(top_k, collection.count())
+        n_results=min(top_k, fresh_collection.count())
     )
     chunks = []
     for i in range(len(results["ids"][0])):
@@ -316,7 +316,8 @@ def rerank(query, chunks, top_k=4):
     return sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
 
 def retrieve(query, top_k=4):
-    if collection.count() == 0:
+    _, fresh_collection = load_chromadb()
+    if fresh_collection.count() == 0:
         return []
     vector_results = vector_search(query, top_k=10)
     bm25_results   = bm25_search(query,   top_k=10)
@@ -626,7 +627,8 @@ def chat(query, memory, mode="rag"):
         return str(e), []
 
     # ── No data check ─────────────────────────────────────────────────────────
-    if collection.count() == 0:
+    _, fresh_collection = load_chromadb()
+    if fresh_collection.count() == 0:
         return (
             "No documents loaded yet! Please upload a PDF, Excel, CSV, or enter a URL first.\n\n"
             "Not sure how to start? Ask me **'how to use'** 😊"
@@ -912,7 +914,13 @@ def main():
             st.session_state.memory       = []
             st.session_state.files_loaded = []
             query_cache.clear()
-            chroma_client.delete_collection("retriva")
+            bm25_chunks.clear() if hasattr(bm25_chunks, 'clear') else None
+            fresh_client, _ = load_chromadb()
+            try:
+                fresh_client.delete_collection("retriva")
+            except:
+                pass
+            st.cache_resource.clear()
             st.rerun()
 
     st.divider()
