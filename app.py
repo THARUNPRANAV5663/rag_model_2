@@ -154,7 +154,7 @@ def load_pdf(file_path):
             pages.append({
                 "text":       text,
                 "page":       page_num + 1,
-                "source":     os.path.basename(file_path),
+                "source":     clean_source_name(os.path.basename(file_path)),
                 "extraction": extraction
             })
     return pages
@@ -188,7 +188,7 @@ def _df_to_chunks(df, file_path, sheet_name):
         sentence = f"Row {i+1}: {sentence}."
         chunks.append({
             "text":   sentence,
-            "source": os.path.basename(file_path),
+            "source": clean_source_name(os.path.basename(file_path)),
             "sheet":  sheet_name,
             "rows":   str(i + 1)
         })
@@ -356,7 +356,14 @@ def chunk_documents(docs, chunk_size=512, overlap=50):
 # SECTION 6 — EMBEDDER
 # ════════════════════════════════════════════════════════════════════════════
 
-def get_file_hash(file_path):
+def clean_source_name(source):
+    """Strip session ID prefix from temp filenames for clean display.
+    e.g. '8beb1509201c4036_62ec1d26_Resume.pdf' → 'Resume.pdf'
+    """
+    import re
+    # Remove leading hex session prefix patterns like 'abc123_deadbeef_'
+    cleaned = re.sub(r'^[a-f0-9]{8,}_[a-f0-9]{6,}_', '', source)
+    return cleaned
     """Stream file in 4KB chunks — prevents RAM spike on large files."""
     hash_md5 = hashlib.md5()
     with open(file_path, "rb") as f:
@@ -574,6 +581,8 @@ FAQ_TRIGGERS = [
             "what is your purpose", "how to use", "get started", "help",
             "what format", "which format", "what documents", "which files",
             "can you handle", "do you support",
+            "what all you can do", "what all can you do", "what u can do",
+            "what are your features", "your features", "your capabilities",
         ],
         "answer": (
             "Here's what I can do 💡\n\n"
@@ -595,6 +604,8 @@ FAQ_TRIGGERS = [
             "will you share", "can others see", "is it private",
             "my data safe", "is my data", "data leak", "data breach",
             "log my data", "storing my", "save my file",
+            "is my document safe", "document safe", "my document safe",
+            "is my file safe", "file safe", "my file safe",
         ],
         "answer": (
             "Your data is **completely safe** 🔒\n\n"
@@ -674,6 +685,24 @@ FAQ_TRIGGERS = [
         "answer": (
             "I'm doing great, thanks for asking! 😄\n\n"
             "Ready to dive into your documents. Upload a file or ask me anything!"
+        )
+    },
+    {
+        "category": "upload_help",
+        "keywords": [
+            "can't upload", "cannot upload", "cant upload",
+            "upload not working", "file not uploading", "unable to upload",
+            "how to upload", "where to upload", "upload a file",
+            "i can't upload", "i cannot upload",
+            "not able to upload", "trouble uploading",
+        ],
+        "answer": (
+            "No worries! 😊 Here's how to upload:\n\n"
+            "1. Look for the **sidebar** on the left (on mobile, tap the **›** arrow at top-left)\n"
+            "2. Click **'Browse files'** to upload a PDF, Excel, CSV, or TSV\n"
+            "3. Or paste a **URL** in the text box\n"
+            "4. Hit **⚡ Process Sources** — then ask me anything!\n\n"
+            "If you're on mobile, the sidebar might be hidden — just tap the **›** arrow to open it."
         )
     },
     {
@@ -783,10 +812,9 @@ def chat(query, memory):
 
     # ── Context ───────────────────────────────────────────────────────────────
     context = "\n\n".join([
-        f"[Source: {c['metadata']['source']} | "
-        f"Page: {c['metadata']['page']} | "
-        f"Chunk: {c['metadata'].get('chunk_index', '')}]\n{c['text']}"
-        for c in chunks
+        f"[Source {i+1}: {clean_source_name(c['metadata']['source'])} | "
+        f"Page: {c['metadata']['page']}]\n{c['text']}"
+        for i, c in enumerate(chunks)
     ])
 
     # ── System prompt ─────────────────────────────────────────────────────────
@@ -794,7 +822,7 @@ def chat(query, memory):
 Answer questions based ONLY on the provided document context.
 If the answer is not found in the context, say: "I couldn't find that information in the provided documents."
 Be conversational, clear and concise.
-Always mention the source and page number in your answer."""
+DO NOT repeat the source citation after every sentence — mention the source file and page number ONLY ONCE at the very end of your answer in this format: (Source: filename | Page: X)"""
 
     messages  = [{"role": "system", "content": system_prompt}]
     messages += memory
