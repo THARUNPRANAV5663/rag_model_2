@@ -89,7 +89,7 @@ def log_to_sheets(name, session_id, query, answer, mode, response_time_ms,
             name,
             session_id,
             query[:300],          # query capped at 300 chars
-            answer[:1000],        # answer capped at 1000 chars
+            answer[:1500] if len(answer) <= 1500 else answer[:1497] + "...",  # word-safe truncation
             mode,
             response_time_ms,
             file_types,
@@ -511,6 +511,10 @@ FAQ_TRIGGERS = [
             "who created retriva", "who built retriva", "who made retriva",
             "your creator", "your developer", "your author", "your maker",
             "built by", "made by", "created by", "developed by",
+            "ur owner", "who's ur owner", "whos ur owner",
+            "ur founder", "ur creator", "ur developer", "ur maker",
+            "who is ur owner", "who is ur creator", "who is ur founder",
+            "founder of retriva", "owner of retriva",
         ],
         "answer": (
             "Hey! I'm **Retriva** 👋 — a smart document chatbot built by **Tharun Pranav K S**.\n\n"
@@ -1131,9 +1135,12 @@ def main():
             "sources": sources
         })
 
-        st.session_state.memory.append({"role": "user",      "content": user_input})
-        st.session_state.memory.append({"role": "assistant", "content": answer})
-        st.session_state.memory = st.session_state.memory[-6:]
+        # Only add to memory if it was a real RAG answer — not FAQ/error/no-doc responses
+        # This prevents unrelated questions from polluting retrieval context
+        if sources:
+            st.session_state.memory.append({"role": "user",      "content": user_input})
+            st.session_state.memory.append({"role": "assistant", "content": answer})
+            st.session_state.memory = st.session_state.memory[-6:]
 
 
 if __name__ == "__main__":
