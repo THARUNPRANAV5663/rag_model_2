@@ -541,6 +541,9 @@ FAQ_TRIGGERS = [
             "ur founder", "ur creator", "ur developer", "ur maker",
             "who is ur owner", "who is ur creator", "who is ur founder",
             "founder of retriva", "owner of retriva",
+            "who is your founder", "your founder", "who founded you",
+            "is ur founder", "is your founder", "where is ur founder",
+            "where is your founder", "ur founder from", "your founder from",
         ],
         "answer": (
             "Hey! I'm **Retriva** 👋 — a smart document chatbot built by **Tharun Pranav K S**.\n\n"
@@ -556,6 +559,8 @@ FAQ_TRIGGERS = [
             "can you read pdf", "can you read excel", "supported formats",
             "how does this work", "how do you work", "what's your purpose",
             "what is your purpose", "how to use", "get started", "help",
+            "what format", "which format", "what documents", "which files",
+            "can you handle", "do you support",
         ],
         "answer": (
             "Here's what I can do 💡\n\n"
@@ -574,12 +579,16 @@ FAQ_TRIGGERS = [
             "do you collect", "do you save", "is it safe", "safe to upload",
             "where does my data go", "who sees my data", "confidential",
             "privacy", "secure", "trust you",
+            "will you share", "can others see", "is it private",
+            "my data safe", "is my data", "data leak", "data breach",
+            "log my data", "storing my", "save my file",
         ],
         "answer": (
             "Your data is **completely safe** 🔒\n\n"
             "Everything you upload is processed **in-memory only** during your session. "
-            "Nothing is saved to disk, sent to any external server, or stored anywhere. "
-            "Once you close the session, it's all gone. You can safely upload confidential documents!"
+            "Nothing is shared with other users. "
+            "Once you close the session, everything is cleared automatically.\n\n"
+            "You can safely upload confidential documents!"
         )
     },
     {
@@ -587,10 +596,13 @@ FAQ_TRIGGERS = [
         "keywords": [
             "remember previous", "remember chats", "chat history",
             "previous conversations", "do you remember", "your memory",
+            "do you forget", "will you forget", "do you store chat",
+            "remember me", "remember my name",
         ],
         "answer": (
-            "I remember the last **3 messages** in our current conversation for context. "
-            "I don't retain any memory across sessions — each session starts fresh."
+            "I remember the last **3 exchanges** in our current conversation for context. "
+            "I don't retain any memory across sessions — each new session starts completely fresh. "
+            "Your previous chats are never visible to me or anyone else."
         )
     },
     {
@@ -598,7 +610,8 @@ FAQ_TRIGGERS = [
         "keywords": [
             "i don't understand", "i dont understand", "confused",
             "what do you mean", "can you explain", "explain that",
-            "how does that work", "lost", "pardon",
+            "how does that work", "lost", "pardon", "i'm lost",
+            "im lost", "not sure", "unclear", "what does that mean",
         ],
         "answer": (
             "No worries! 😊 Let me break it down:\n\n"
@@ -616,7 +629,8 @@ FAQ_TRIGGERS = [
             "well done", "great job", "you are great", "ur great", "you're great",
             "you are good", "you're good", "ur good", "retriva is great",
             "retriva is good", "awesome", "perfect", "great answer",
-            "good answer", "well answered",
+            "good answer", "well answered", "nice answer", "loved it",
+            "superb", "excellent", "brilliant", "fantastic", "impressive",
         ],
         "answer": (
             "Thank you, that means a lot! 😊\n\n"
@@ -628,6 +642,8 @@ FAQ_TRIGGERS = [
         "keywords": [
             "bye", "goodbye", "see you", "see ya", "cya", "later",
             "take care", "gotta go", "ttyl", "talk later", "good bye",
+            "i'm leaving", "im leaving", "logging off", "signing off",
+            "catch you later", "peace out", "adios", "tata",
         ],
         "answer": (
             "Goodbye! 👋 Come back anytime with more documents to explore.\n\n"
@@ -640,6 +656,7 @@ FAQ_TRIGGERS = [
             "how are you", "how r u", "how are u", "how r you",
             "how's it going", "hows it going", "how do you do",
             "you doing", "you okay", "you good", "all good",
+            "how are things", "how's everything", "how you doing",
         ],
         "answer": (
             "I'm doing great, thanks for asking! 😄\n\n"
@@ -652,7 +669,8 @@ FAQ_TRIGGERS = [
             "hello", "hi", "hey", "heyy", "heyyy", "hii", "hiii",
             "good morning", "good afternoon", "good evening", "good night",
             "howdy", "sup", "what's up", "whats up", "wassup", "yo",
-            "greetings", "namaste", "vanakkam", "hola",
+            "greetings", "namaste", "vanakkam", "hola", "bonjour",
+            "start", "begin", "let's start", "lets start", "let's go", "lets go",
         ],
         "answer": (
             "Hey there! 👋 Welcome to **Retriva**!\n\n"
