@@ -916,15 +916,14 @@ def main():
                 st.write(f"• {src}")
 
         if st.button("🗑️ Clear All", use_container_width=True):
+            global bm25_index, bm25_chunks, processed_hashes
             st.session_state.chat_history = []
             st.session_state.memory       = []
             st.session_state.files_loaded = []
             query_cache.clear()
-            global bm25_index, bm25_chunks, processed_hashes
             bm25_index  = None
             bm25_chunks = []
             processed_hashes = set()
-            # Nuke and recreate the chroma client cleanly
             try:
                 if "chroma_client" in st.session_state:
                     st.session_state.chroma_client.delete_collection("retriva")
