@@ -61,7 +61,7 @@ def load_models():
 
 @st.cache_resource
 def load_chromadb():
-    client     = chromadb.Client()
+    client     = chromadb.EphemeralClient()
     collection = client.get_or_create_collection(name="retriva")
     return client, collection
 
@@ -96,6 +96,40 @@ def load_pdf(file_path):
     return pages
 
 
+MAX_ROWS_FULL    = 500    # embed all rows below this
+MAX_ROWS_SAMPLE  = 3000  # sample cap for very large files
+SAMPLE_THRESHOLD = 500   # trigger sampling above this
+
+def _df_to_chunks(df, file_path, sheet_name):
+    chunks = []
+    df = df.fillna("unknown")
+    n  = len(df)
+
+    if n > SAMPLE_THRESHOLD:
+        # Smart sampling: always keep first + last 100 rows for structure,
+        # random sample the middle for coverage
+        head = df.iloc[:100]
+        tail = df.iloc[-100:]
+        mid  = df.iloc[100:-100]
+        sample_n = min(MAX_ROWS_SAMPLE - 200, len(mid))
+        if sample_n > 0:
+            mid = mid.sample(n=sample_n, random_state=42)
+        df_sampled = pd.concat([head, mid, tail]).drop_duplicates()
+        st.info(f"📊 Large file detected ({n:,} rows) — sampled {len(df_sampled):,} representative rows for fast embedding.")
+    else:
+        df_sampled = df
+
+    for i, row in df_sampled.iterrows():
+        sentence = ", ".join([f"{col} is {val}" for col, val in row.items()])
+        sentence = f"Row {i+1}: {sentence}."
+        chunks.append({
+            "text":   sentence,
+            "source": os.path.basename(file_path),
+            "sheet":  sheet_name,
+            "rows":   str(i + 1)
+        })
+    return chunks
+
 def load_tabular(file_path):
     ext    = os.path.splitext(file_path)[1].lower()
     chunks = []
@@ -108,16 +142,7 @@ def load_tabular(file_path):
     else:
         return []
     for sheet_name, df in sheets.items():
-        df = df.fillna("unknown")
-        for i, row in df.iterrows():
-            sentence = ", ".join([f"{col} is {val}" for col, val in row.items()])
-            sentence = f"Row {i+1}: {sentence}."
-            chunks.append({
-                "text":   sentence,
-                "source": os.path.basename(file_path),
-                "sheet":  sheet_name,
-                "rows":   str(i + 1)
-            })
+        chunks.extend(_df_to_chunks(df, file_path, sheet_name))
     return chunks
 
 
@@ -348,6 +373,41 @@ Rewrite this query:"""
 # ════════════════════════════════════════════════════════════════════════════
 
 FAQ_TRIGGERS = {
+    "greeting": {
+        "keywords": [
+            "hello", "hi", "hey", "heyy", "heyyy", "hii", "hiii",
+            "good morning", "good afternoon", "good evening", "good night",
+            "howdy", "sup", "what's up", "whats up", "wassup", "yo",
+            "greetings", "namaste", "vanakkam", "hola",
+        ],
+        "answer": (
+            "Hey there! 👋 Welcome to **Retriva**!\n\n"
+            "I'm your smart document assistant. Upload a PDF, Excel, CSV, or paste a URL — "
+            "and I'll answer anything from it instantly.\n\n"
+            "Want to get started? Try uploading a file from the sidebar! 🚀"
+        )
+    },
+    "thanks": {
+        "keywords": [
+            "thank you", "thanks", "thankyou", "thx", "ty", "thank u",
+            "appreciate it", "appreciated", "cheers", "nice one", "good job",
+            "well done", "great job", "awesome", "perfect", "great",
+        ],
+        "answer": (
+            "You're welcome! 😊 Happy to help.\n\n"
+            "Got more questions? Just ask — I'm here!"
+        )
+    },
+    "farewell": {
+        "keywords": [
+            "bye", "goodbye", "see you", "see ya", "cya", "later",
+            "take care", "gotta go", "ttyl", "talk later", "good bye",
+        ],
+        "answer": (
+            "Goodbye! 👋 Come back anytime with more documents to explore.\n\n"
+            "Have a great day! 🌟"
+        )
+    },
     "identity": {
         "keywords": [
             "who are you", "who r u", "who ru", "who are u", "whos this",
@@ -405,6 +465,20 @@ FAQ_TRIGGERS = {
         "answer": (
             "I remember the last **3 messages** in our current conversation for context. "
             "I don't retain any memory across sessions — each session starts fresh."
+        )
+    },
+    "confused": {
+        "keywords": [
+            "i don't understand", "i dont understand", "confused", "not sure",
+            "what do you mean", "can you explain", "explain that",
+            "how does that work", "lost", "huh", "what?", "pardon",
+        ],
+        "answer": (
+            "No worries! 😊 Let me break it down:\n\n"
+            "1. **Upload** a PDF, Excel, CSV, or paste a URL in the sidebar\n"
+            "2. Hit **⚡ Process Sources** to let me read it\n"
+            "3. **Ask me anything** about the document in the chat\n\n"
+            "I'll find the answer and tell you exactly which page or row it came from!"
         )
     },
 }
@@ -522,8 +596,91 @@ def main():
         layout     = "wide"
     )
 
-    st.title("🔍 Retriva")
-    st.caption("Smart document chatbot — PDF, Excel, CSV, URL | Built by Tharun Pranav K S")
+    # ── Custom CSS ────────────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    /* ── Hero title ── */
+    .retriva-hero {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 8px 0 4px 0;
+    }
+    .retriva-logo {
+        font-size: 2.6rem;
+        line-height: 1;
+    }
+    .retriva-title {
+        font-size: 2.2rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #6C63FF 0%, #48CAE4 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin: 0;
+        line-height: 1.1;
+    }
+    .retriva-sub {
+        font-size: 0.85rem;
+        color: #888;
+        margin-top: 2px;
+    }
+
+    /* ── Chat messages ── */
+    [data-testid="stChatMessage"] {
+        border-radius: 14px !important;
+        padding: 12px 16px !important;
+        margin-bottom: 8px !important;
+    }
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {
+        background: #0f0f1a !important;
+        border-right: 1px solid #1e1e2e;
+    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        color: #a0a0c0 !important;
+        font-size: 0.85rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+
+    /* ── Process button ── */
+    div[data-testid="stButton"] button[kind="secondary"] {
+        background: linear-gradient(135deg, #6C63FF, #48CAE4) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+    }
+
+    /* ── Chat input ── */
+    [data-testid="stChatInput"] textarea {
+        border-radius: 12px !important;
+        border: 1px solid #2a2a3e !important;
+        background: #0f0f1a !important;
+    }
+
+    /* ── Divider ── */
+    hr { border-color: #1e1e2e !important; }
+    </style>
+
+    <div class="retriva-hero">
+        <div class="retriva-logo">🔍</div>
+        <div>
+            <div class="retriva-title">Retriva</div>
+            <div class="retriva-sub">Smart document chatbot — PDF, Excel, CSV, URL &nbsp;|&nbsp; Built by Tharun Pranav K S</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
@@ -601,7 +758,8 @@ def main():
     st.divider()
 
     for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
+        avatar = "🧑‍💻" if msg["role"] == "user" else "🔍"
+        with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
             if msg["role"] == "assistant" and msg.get("sources"):
                 with st.expander("📌 Sources"):
@@ -615,12 +773,12 @@ def main():
     user_input = st.chat_input("Ask anything about your documents...")
 
     if user_input:
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar="🧑‍💻"):
             st.write(user_input)
 
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar="🔍"):
             with st.spinner("Thinking..."):
                 answer, sources = chat(user_input, st.session_state.memory)
             st.write(answer)
