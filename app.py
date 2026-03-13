@@ -60,16 +60,18 @@ def load_models():
     return embedder, reranker
 
 def get_collection():
-    """Always returns a valid collection — stored in session_state so it survives reruns."""
+    """Always returns a valid collection isolated per user session."""
     if "chroma_client" not in st.session_state:
         st.session_state.chroma_client = chromadb.EphemeralClient()
+    # Each user gets their own collection — prevents data mixing between users
+    session_id = st.session_state.get("session_id", "default")
+    collection_name = f"retriva_{session_id}"
     client = st.session_state.chroma_client
     try:
-        collection = client.get_or_create_collection(name="retriva")
+        collection = client.get_or_create_collection(name=collection_name)
     except Exception:
-        # Client died — recreate everything
         st.session_state.chroma_client = chromadb.EphemeralClient()
-        collection = st.session_state.chroma_client.get_or_create_collection(name="retriva")
+        collection = st.session_state.chroma_client.get_or_create_collection(name=collection_name)
     return st.session_state.chroma_client, collection
 
 embedder, reranker = load_models()
@@ -242,22 +244,30 @@ def chunk_documents(docs, chunk_size=512, overlap=50):
 # SECTION 6 — EMBEDDER
 # ════════════════════════════════════════════════════════════════════════════
 
-processed_hashes = set()
-bm25_index  = None
-bm25_chunks = []
-
 def get_file_hash(file_path):
     with open(file_path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
 
+def get_bm25():
+    """Get session-isolated BM25 state."""
+    if "bm25_index"       not in st.session_state: st.session_state.bm25_index       = None
+    if "bm25_chunks"      not in st.session_state: st.session_state.bm25_chunks      = []
+    if "processed_hashes" not in st.session_state: st.session_state.processed_hashes = set()
+    if "query_cache"      not in st.session_state: st.session_state.query_cache       = {}
+    return (
+        st.session_state.bm25_index,
+        st.session_state.bm25_chunks,
+        st.session_state.processed_hashes,
+        st.session_state.query_cache,
+    )
+
 def embed_and_store(chunks, file_hash=None):
-    global bm25_index, bm25_chunks
+    _, bm25_chunks, processed_hashes, _ = get_bm25()
     if file_hash and file_hash in processed_hashes:
         st.info("File already processed — skipping reembedding.")
         return
     if not chunks:
         return
-    # Always get fresh collection reference to avoid stale cache issues
     _, fresh_collection = get_collection()
     texts     = [c["text"] for c in chunks]
     ids       = [hashlib.md5(c["text"].encode()).hexdigest() for c in chunks]
@@ -270,11 +280,11 @@ def embed_and_store(chunks, file_hash=None):
     } for c in chunks]
     embeddings = embedder.encode(texts, show_progress_bar=False).tolist()
     fresh_collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
-    bm25_chunks += chunks
-    tokenized   = [c["text"].lower().split() for c in bm25_chunks]
-    bm25_index  = BM25Okapi(tokenized)
+    st.session_state.bm25_chunks += chunks
+    tokenized = [c["text"].lower().split() for c in st.session_state.bm25_chunks]
+    st.session_state.bm25_index  = BM25Okapi(tokenized)
     if file_hash:
-        processed_hashes.add(file_hash)
+        st.session_state.processed_hashes.add(file_hash)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -298,6 +308,7 @@ def vector_search(query, top_k=10):
     return chunks
 
 def bm25_search(query, top_k=10):
+    bm25_index, bm25_chunks, _, _ = get_bm25()
     if bm25_index is None:
         return []
     tokenized_query = query.lower().split()
@@ -570,8 +581,6 @@ def check_faq(query):
 # SECTION 10 — CHAIN
 # ════════════════════════════════════════════════════════════════════════════
 
-query_cache = {}
-
 def compress_context(chunks, max_tokens=1500):
     total = sum(c.get("tokens", 0) for c in chunks)
     if total <= max_tokens:
@@ -688,6 +697,7 @@ def chat(query, memory, mode="rag"):
     chunks = compress_context(chunks, max_tokens=1500)
 
     # ── Cache ─────────────────────────────────────────────────────────────────
+    _, _, _, query_cache = get_bm25()
     cache_key = hashlib.md5(
         (rewritten + "".join([c["text"][:50] for c in chunks])).encode()
     ).hexdigest()
@@ -731,7 +741,7 @@ Always mention the source and page number in your answer."""
                     return "⚠️ Groq rate limit hit — please wait a moment and try again.", []
                 return f"⚠️ LLM error: {err}", []
 
-    query_cache[cache_key] = answer
+    st.session_state.query_cache[cache_key] = answer
     return answer, chunks
 
 
@@ -740,17 +750,22 @@ Always mention the source and page number in your answer."""
 # ════════════════════════════════════════════════════════════════════════════
 
 def reset_all():
-    global bm25_index, bm25_chunks, processed_hashes
-    st.session_state.chat_history = []
-    st.session_state.memory       = []
-    st.session_state.files_loaded = []
-    query_cache.clear()  # invalidate cache on reset
-    bm25_index       = None
-    bm25_chunks      = []
-    processed_hashes = set()
+    session_id = st.session_state.get("session_id", "default")
+    col_name   = f"retriva_{session_id}"
+    # Clear all session-isolated state
+    for key in ["chat_history", "memory", "files_loaded",
+                "bm25_index", "bm25_chunks", "processed_hashes", "query_cache"]:
+        st.session_state.pop(key, None)
+    st.session_state.chat_history    = []
+    st.session_state.memory          = []
+    st.session_state.files_loaded    = []
+    st.session_state.bm25_index      = None
+    st.session_state.bm25_chunks     = []
+    st.session_state.processed_hashes = set()
+    st.session_state.query_cache     = {}
     try:
         if "chroma_client" in st.session_state:
-            st.session_state.chroma_client.delete_collection("retriva")
+            st.session_state.chroma_client.delete_collection(col_name)
     except:
         pass
     st.session_state.pop("chroma_client", None)
@@ -890,6 +905,10 @@ def main():
     """, unsafe_allow_html=True)
 
     # ── Session state ─────────────────────────────────────────────────────────
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = hashlib.md5(
+            str(id(st.session_state)).encode()
+        ).hexdigest()[:12]
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "memory" not in st.session_state:
@@ -923,6 +942,7 @@ def main():
         url_input = st.text_input("Or enter a URL:", placeholder="https://...")
 
         if st.button("⚡ Process Sources", use_container_width=True):
+            get_bm25()  # ensure session_state keys initialized
 
             for uploaded_file in uploaded_files:
                 temp_path = f"/tmp/{uploaded_file.name}"
@@ -931,7 +951,7 @@ def main():
                 try:
                     check_file_size(temp_path)
                     file_hash = get_file_hash(temp_path)
-                    if file_hash in processed_hashes:
+                    if file_hash in st.session_state.processed_hashes:
                         st.info(f"⏭️ {uploaded_file.name} already processed — skipping.")
                         continue
                     ext = os.path.splitext(uploaded_file.name)[1].lower()
@@ -956,7 +976,7 @@ def main():
                 try:
                     check_url(url_input)
                     url_hash = hashlib.md5(url_input.encode()).hexdigest()
-                    if url_hash in processed_hashes:
+                    if url_hash in st.session_state.processed_hashes:
                         st.info(f"⏭️ URL already processed — skipping.")
                     else:
                         with st.spinner(f"Scraping {url_input}..."):
