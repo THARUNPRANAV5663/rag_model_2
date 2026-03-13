@@ -8,8 +8,10 @@
 
 import os
 import io
+import re
 import json
 import time
+import uuid
 import hashlib
 from datetime import datetime
 
@@ -261,7 +263,6 @@ def check_file_size(file_path, max_mb=20):
         raise ValueError(f"File too large: {size_mb:.1f}MB — max {max_mb}MB")
 
 def check_url(url):
-    import ipaddress
     if not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL — must start with http:// or https://")
     # Block internal/private IPs and hostnames
@@ -282,7 +283,6 @@ def check_url(url):
         raise ValueError("Blocked URL — internal/private addresses not allowed.")
 
 def check_prompt_injection(query):
-    import re
     # Normalize whitespace and remove spaces between letters to catch "ig nore" → "ignore"
     q_normal  = query.lower().strip()
     q_compact = re.sub(r'\s+', '', q_normal)  # remove ALL spaces for bypass detection
@@ -360,7 +360,6 @@ def clean_source_name(source):
     """Strip session ID prefix from temp filenames for clean display.
     e.g. '8beb1509201c4036_62ec1d26_Resume.pdf' → 'Resume.pdf'
     """
-    import re
     # Remove leading hex session prefix patterns like 'abc123_deadbeef_'
     cleaned = re.sub(r'^[a-f0-9]{8,}_[a-f0-9]{6,}_', '', source)
     return cleaned
@@ -726,7 +725,6 @@ FAQ_TRIGGERS = [
 def check_faq(query):
     """Returns (category, answer) if query matches any trigger, else (None, None).
     Uses word-boundary matching to avoid false positives like 'hi' in 'hiring'."""
-    import re
     q = query.lower().strip()
     for faq in FAQ_TRIGGERS:
         for keyword in faq["keywords"]:
@@ -760,7 +758,35 @@ def compress_context(chunks, max_tokens=1500):
     return compressed
 
 
+SUMMARIZE_KEYWORDS = [
+    "extract all", "extract everything", "extract all from",
+    "summarize", "summarise", "give me a summary", "full summary",
+    "summarize the document", "summarize the file", "summarize this",
+    "give me everything", "show me everything", "tell me everything",
+    "what does the document say", "what does it say", "what's in the document",
+    "whats in the document", "what is in the document",
+    "overview", "give an overview", "give me an overview",
+    "brief summary", "key points", "main points", "key details",
+    "extract key", "extract information", "extract details",
+]
+
+def is_summarize_query(query):
+    q = query.lower().strip()
+    return any(k in q for k in SUMMARIZE_KEYWORDS)
+
+
 def chat(query, memory):
+
+    # ── Summarize intent + no doc loaded → FAQ ────────────────────────────────
+    _, fresh_collection_check = get_collection()
+    if is_summarize_query(query) and fresh_collection_check.count() == 0:
+        return (
+            "📄 It looks like you want a summary!\n\n"
+            "Please upload your document first:\n"
+            "1. Open the **sidebar** (tap **›** on mobile)\n"
+            "2. Upload your file and hit **⚡ Process Sources**\n"
+            "3. Then ask me to summarize and I'll give you a clean overview!"
+        ), []
 
     # ── FAQ check — before RAG pipeline ───────────────────────────────────────
     _, faq_answer = check_faq(query)
@@ -793,6 +819,46 @@ def chat(query, memory):
 
     # ── Rewrite ───────────────────────────────────────────────────────────────
     rewritten = rewrite_query(query, chat_history=memory)
+
+    # ── Summarize path — use more chunks + dedicated prompt ───────────────────
+    if is_summarize_query(query):
+        chunks = retrieve(rewritten, top_k=8)  # more chunks for summary
+        if not chunks:
+            return "I couldn't find enough content to summarize. Please make sure your document is processed.", []
+        chunks   = compress_context(chunks, max_tokens=2500)
+        context  = "\n\n".join([
+            f"[Source {i+1}: {clean_source_name(c['metadata']['source'])} | Page: {c['metadata']['page']}]\n{c['text']}"
+            for i, c in enumerate(chunks)
+        ])
+        summary_prompt = """You are Retriva — a smart document chatbot.
+The user wants a summary or full extraction of their document.
+Based ONLY on the provided context, give a clean, well-structured summary.
+Use headings and bullet points where appropriate.
+Do NOT repeat source citations after every line — mention the source ONCE at the very end."""
+        messages  = [{"role": "system", "content": summary_prompt}]
+        messages += memory
+        messages += [{"role": "user", "content": f"Context:\n{context}\n\nRequest: {query}"}]
+        for attempt in range(2):
+            try:
+                response = groq_client.chat.completions.create(
+                    model       = "llama-3.3-70b-versatile",
+                    messages    = messages,
+                    max_tokens  = 800,   # more tokens for summary
+                    temperature = 0.3,
+                    timeout     = 20,
+                )
+                answer = response.choices[0].message.content.strip()
+                break
+            except Exception as e:
+                if attempt == 1:
+                    err = str(e)
+                    if "429" in err:
+                        return "⚠️ Groq rate limit hit — please wait a moment and try again.", []
+                    return f"⚠️ LLM error: {err}", []
+        st.session_state.query_cache[
+            hashlib.md5((rewritten + "summary").encode()).hexdigest()
+        ] = answer
+        return answer, chunks
 
     # ── Retrieve ──────────────────────────────────────────────────────────────
     chunks = retrieve(rewritten, top_k=4)
@@ -1043,7 +1109,6 @@ def main():
 
     # ── Session state ─────────────────────────────────────────────────────────
     if "session_id" not in st.session_state:
-        import uuid
         st.session_state.session_id = str(uuid.uuid4()).replace("-", "")[:16]
     if "user_name" not in st.session_state:
         st.session_state.user_name = None
@@ -1090,9 +1155,8 @@ def main():
             sid = st.session_state.session_id  # use session_id to isolate temp files
 
             for uploaded_file in uploaded_files:
-                import uuid as _uuid
                 safe_name  = uploaded_file.name.replace("/", "_").replace("\\", "_")
-                temp_path  = f"/tmp/{sid}_{_uuid.uuid4().hex[:8]}_{safe_name}"
+                temp_path  = f"/tmp/{sid}_{uuid.uuid4().hex[:8]}_{safe_name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 try:
