@@ -72,7 +72,7 @@ def get_sheets_client():
     except Exception:
         return None
 
-def log_to_sheets(name, session_id, query, mode, response_time_ms,
+def log_to_sheets(name, session_id, query, answer, mode, response_time_ms,
                   file_types, answer_type, answer_length, browser, os_info):
     """Silently log one row to Google Sheets — never crashes the app."""
     try:
@@ -88,7 +88,8 @@ def log_to_sheets(name, session_id, query, mode, response_time_ms,
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             name,
             session_id,
-            query[:200],  # cap at 200 chars
+            query[:300],          # query capped at 300 chars
+            answer[:1000],        # answer capped at 1000 chars
             mode,
             response_time_ms,
             file_types,
@@ -1210,6 +1211,7 @@ def main():
             name             = st.session_state.user_name,
             session_id       = st.session_state.session_id,
             query            = user_input,
+            answer           = answer,
             mode             = "Groq AI" if st.session_state.mode == "groq" else "RAG",
             response_time_ms = response_time_ms,
             file_types       = file_types,
