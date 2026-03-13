@@ -516,8 +516,6 @@ FAQ_TRIGGERS = [
             "Hey! I'm **Retriva** 👋 — a smart document chatbot built by **Tharun Pranav K S**.\n\n"
             "I'm not ChatGPT or any OpenAI product. I'm powered by **Llama3 (via Groq)** "
             "with hybrid retrieval (semantic + keyword search) and a reranker under the hood.\n\n"
-            "In **RAG mode** I answer strictly from your uploaded documents. "
-            "Switch to **Groq AI mode** (top-right toggle) to chat using Llama3's general knowledge.\n\n"
             "Upload a PDF, Excel, CSV, or paste a URL — and I'll answer anything from it. Let's go! 🚀"
         )
     },
@@ -534,8 +532,7 @@ FAQ_TRIGGERS = [
             "📄 **PDFs** — digital & scanned (OCR supported)\n"
             "📊 **Excel** — .xlsx, .xls (multi-sheet)\n"
             "📋 **CSV / TSV** — tabular data\n"
-            "🌐 **URLs** — scrape and answer from any webpage\n\n"
-            "🔀 **Two modes** — RAG (document-only) or Groq AI (general knowledge) via the top-right toggle.\n\n"
+            "🌐 **URLs** — scrape and answer from any public webpage\n\n"
             "Just upload your file or paste a URL, hit **⚡ Process Sources**, and ask me anything!"
         )
     },
@@ -672,66 +669,8 @@ def compress_context(chunks, max_tokens=1500):
         compressed.append(chunk)
     return compressed
 
-def chat_groq_ai(query, memory):
-    """Groq AI mode — answers from Llama3 general knowledge, no document context."""
-    # Only flag as doc-specific if query contains SPECIFIC doc phrases, not just "data"
-    doc_hints = [
-        "my csv", "my pdf", "my excel", "my file", "my document", "my sheet",
-        "uploaded file", "uploaded csv", "uploaded pdf", "the csv", "the pdf",
-        "the excel", "the document", "the file", "in the sheet", "the table",
-        "how many rows", "how many columns", "column names", "my data",
-    ]
-    q = query.lower()
-    if any(hint in q for hint in doc_hints):
-        return (
-            "📄 That looks like a document-specific question!\n\n"
-            "Switch to **RAG mode** using the toggle at the top-right, "
-            "upload your file, and I'll answer it from your data."
-        ), []
 
-    system_prompt = """You are Retriva — a smart AI assistant powered by Llama3 (via Groq).
-You are currently in Groq AI mode — answer from your general knowledge.
-Be conversational, helpful, and concise. If you don't know something, say so honestly.
-Note: your training data has a cutoff of early 2024 — for very recent events, mention this limitation."""
-
-    messages  = [{"role": "system", "content": system_prompt}]
-    messages += memory
-    messages += [{"role": "user", "content": query}]
-
-    for attempt in range(2):
-        try:
-            response = groq_client.chat.completions.create(
-                model       = "llama-3.3-70b-versatile",
-                messages    = messages,
-                max_tokens  = 512,
-                temperature = 0.5,
-                timeout     = 15,
-            )
-            return response.choices[0].message.content.strip(), []
-        except Exception as e:
-            if attempt == 1:
-                err = str(e)
-                if "429" in err:
-                    return "⚠️ Groq rate limit hit — please wait a moment and try again.", []
-                return f"⚠️ LLM error: {err}", []
-    return "⚠️ Something went wrong. Please try again.", []
-
-
-def chat(query, memory, mode="rag"):
-
-    # ── Groq AI mode — bypass RAG entirely ───────────────────────────────────
-    if mode == "groq":
-        # Security: block API key extraction attempts in both modes
-        api_key_hints = ["api key", "apikey", "api_key", "secret key", "groq key", "your key", "show key", "give key"]
-        if any(hint in query.lower() for hint in api_key_hints):
-            return "🔒 That's confidential — I can't share API keys or credentials.", []
-        # Intercept identity + privacy/capability/memory FAQs in Groq mode
-        # identity MUST be intercepted — otherwise Llama3 says "built by Meta"
-        GROQ_FAQ_CATEGORIES = {"identity", "privacy", "capability", "memory", "confused"}
-        category, faq_answer = check_faq(query)
-        if category in GROQ_FAQ_CATEGORIES and faq_answer:
-            return faq_answer, []
-        return chat_groq_ai(query, memory)
+def chat(query, memory):
 
     # ── FAQ check — before RAG pipeline ───────────────────────────────────────
     _, faq_answer = check_faq(query)
@@ -892,26 +831,6 @@ def main():
         margin-top: 2px;
     }
 
-    /* ── Sticky mode toggle ── */
-    .mode-toggle-wrap {
-        position: fixed;
-        top: 14px;
-        right: 20px;
-        z-index: 9999;
-        background: #1a1a2e;
-        border: 1px solid #2a2a4e;
-        border-radius: 999px;
-        padding: 5px 14px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 0.78rem;
-        font-weight: 600;
-        color: #a0a0c0;
-        box-shadow: 0 2px 12px rgba(108,99,255,0.15);
-    }
-    .mode-rag  { color: #48CAE4; }
-    .mode-groq { color: #6C63FF; }
 
     /* ── Chat messages ── */
     [data-testid="stChatMessage"] {
@@ -1013,20 +932,7 @@ def main():
         st.session_state.memory = []
     if "files_loaded" not in st.session_state:
         st.session_state.files_loaded = []
-    if "mode" not in st.session_state:
-        st.session_state.mode = "rag"
 
-    # ── Sticky mode toggle (top-right) ────────────────────────────────────────
-    col_spacer, col_toggle = st.columns([6, 1])
-    with col_toggle:
-        mode_label = "🗂️ RAG" if st.session_state.mode == "rag" else "🤖 Groq AI"
-        if st.button(mode_label, help="Toggle between RAG (document) mode and Groq AI (general knowledge) mode"):
-            st.session_state.mode = "groq" if st.session_state.mode == "rag" else "rag"
-            st.rerun()
-
-    # ── Mode indicator banner ─────────────────────────────────────────────────
-    if st.session_state.mode == "groq":
-        st.info("🤖 **Groq AI mode** — answering from Llama3 general knowledge. Switch to **RAG mode** to query your documents.")
 
     with st.sidebar:
         st.header("📁 Upload Sources")
@@ -1180,7 +1086,7 @@ def main():
         with st.chat_message("assistant", avatar=RETRIVA_AVATAR):
             with st.spinner("Thinking..."):
                 t_start = time.time()
-                answer, sources = chat(user_input, st.session_state.memory, mode=st.session_state.mode)
+                answer, sources = chat(user_input, st.session_state.memory)
                 response_time_ms = int((time.time() - t_start) * 1000)
             st.write(answer)
             if sources:
@@ -1202,8 +1108,6 @@ def main():
         _, faq_ans = check_faq(user_input)
         if faq_ans:
             answer_type = "FAQ"
-        elif st.session_state.mode == "groq":
-            answer_type = "Groq AI"
         else:
             answer_type = "RAG Pipeline"
 
@@ -1212,7 +1116,7 @@ def main():
             session_id       = st.session_state.session_id,
             query            = user_input,
             answer           = answer,
-            mode             = "Groq AI" if st.session_state.mode == "groq" else "RAG",
+            mode             = "RAG",
             response_time_ms = response_time_ms,
             file_types       = file_types,
             answer_type      = answer_type,
