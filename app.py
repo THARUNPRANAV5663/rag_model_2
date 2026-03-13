@@ -161,6 +161,9 @@ def load_url(url):
         for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
             tag.decompose()
         clean_text = soup.get_text(separator=" ", strip=True)
+        if len(clean_text.strip()) < 200:
+            st.warning("⚠️ The URL returned very little readable content. It may be a JavaScript-rendered page (like a Streamlit app) which can't be scraped. Try a regular webpage, article, or Wikipedia link.")
+            return []
         return [{"text": clean_text, "source": url}]
     except Exception as e:
         st.error(f"URL load failed: {e}")
