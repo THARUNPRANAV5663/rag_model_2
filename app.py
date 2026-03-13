@@ -453,6 +453,10 @@ FAQ_TRIGGERS = [
             "tell me about you", "about you", "about yourself",
             "are you a rag", "complete rag", "pretrained", "pre trained",
             "do you have knowledge", "general knowledge",
+            "who is your owner", "your owner", "who owns you", "who is owner",
+            "who created retriva", "who built retriva", "who made retriva",
+            "your creator", "your developer", "your author", "your maker",
+            "built by", "made by", "created by", "developed by",
         ],
         "answer": (
             "Hey! I'm **Retriva** 👋 — a smart document chatbot built by **Tharun Pranav K S**.\n\n"
@@ -667,9 +671,9 @@ def chat(query, memory, mode="rag"):
         api_key_hints = ["api key", "apikey", "api_key", "secret key", "groq key", "your key", "show key", "give key"]
         if any(hint in query.lower() for hint in api_key_hints):
             return "🔒 That's confidential — I can't share API keys or credentials.", []
-        # Only intercept privacy/capability/memory FAQs in Groq mode
-        # Identity, greetings, howru, thanks → let Groq answer naturally
-        GROQ_FAQ_CATEGORIES = {"privacy", "capability", "memory", "confused"}
+        # Intercept identity + privacy/capability/memory FAQs in Groq mode
+        # identity MUST be intercepted — otherwise Llama3 says "built by Meta"
+        GROQ_FAQ_CATEGORIES = {"identity", "privacy", "capability", "memory", "confused"}
         category, faq_answer = check_faq(query)
         if category in GROQ_FAQ_CATEGORIES and faq_answer:
             return faq_answer, []
@@ -1053,7 +1057,12 @@ def main():
     try:
         _, _col = get_collection()
         if st.session_state.get("files_loaded") and _col.count() == 0:
-            st.session_state.files_loaded = []
+            # Collection empty — session expired, clear all stale state
+            st.session_state.files_loaded     = []
+            st.session_state.bm25_index       = None
+            st.session_state.bm25_chunks      = []
+            st.session_state.processed_hashes = set()
+            st.session_state.query_cache      = {}
             st.warning("⏰ **Session expired** — please re-upload your files and hit ⚡ Process Sources to continue.")
     except Exception:
         pass
