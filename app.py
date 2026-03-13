@@ -622,9 +622,13 @@ def chat(query, memory, mode="rag"):
 
     # ── Groq AI mode — bypass RAG entirely ───────────────────────────────────
     if mode == "groq":
-        # Only intercept identity/privacy/capability/memory FAQs in Groq mode
-        # Greetings, howru, thanks, farewell → let Groq answer naturally
-        GROQ_FAQ_CATEGORIES = {"identity", "privacy", "capability", "memory", "confused"}
+        # Security: block API key extraction attempts in both modes
+        api_key_hints = ["api key", "apikey", "api_key", "secret key", "groq key", "your key", "show key", "give key"]
+        if any(hint in query.lower() for hint in api_key_hints):
+            return "🔒 That's confidential — I can't share API keys or credentials.", []
+        # Only intercept privacy/capability/memory FAQs in Groq mode
+        # Identity, greetings, howru, thanks → let Groq answer naturally
+        GROQ_FAQ_CATEGORIES = {"privacy", "capability", "memory", "confused"}
         category, faq_answer = check_faq(query)
         if category in GROQ_FAQ_CATEGORIES and faq_answer:
             return faq_answer, []
@@ -636,6 +640,9 @@ def chat(query, memory, mode="rag"):
         return faq_answer, []
 
     # ── Security ──────────────────────────────────────────────────────────────
+    api_key_hints = ["api key", "apikey", "api_key", "secret key", "groq key", "your key", "show key", "give key"]
+    if any(hint in query.lower() for hint in api_key_hints):
+        return "🔒 That's confidential — I can't share API keys or credentials.", []
     try:
         check_prompt_injection(query)
     except ValueError as e:
@@ -961,6 +968,30 @@ def main():
             reset_all()
             st.rerun()
 
+    # ── Avatar definitions ────────────────────────────────────────────────────
+    # Retriva star logo
+    RETRIVA_AVATAR = (
+        "data:image/svg+xml;charset=utf-8,"
+        "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-50 -50 100 100'%3E"
+        "%3Cdefs%3E"
+        "%3ClinearGradient id='gs' x1='0' y1='0' x2='1' y2='1'%3E"
+        "%3Cstop offset='0%25' stop-color='%236C63FF'/%3E"
+        "%3Cstop offset='100%25' stop-color='%2348CAE4'/%3E"
+        "%3C/linearGradient%3E"
+        "%3C/defs%3E"
+        "%3Cpolygon points='0,-44 10,-10 44,0 10,10 0,44 -10,10 -44,0 -10,-10' fill='url(%23gs)'/%3E"
+        "%3C/svg%3E"
+    )
+    # User avatar — clean circle silhouette like Claude/GPT style
+    USER_AVATAR = (
+        "data:image/svg+xml;charset=utf-8,"
+        "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E"
+        "%3Ccircle cx='50' cy='50' r='50' fill='%23343541'/%3E"
+        "%3Ccircle cx='50' cy='40' r='18' fill='%23ececf1'/%3E"
+        "%3Cellipse cx='50' cy='86' rx='26' ry='18' fill='%23ececf1'/%3E"
+        "%3C/svg%3E"
+    )
+
     st.divider()
 
     # ── Session expired banner ────────────────────────────────────────────────
@@ -969,7 +1000,7 @@ def main():
         st.warning("⏰ **Session expired** — please re-upload your files and hit ⚡ Process Sources to continue.")
 
     for msg in st.session_state.chat_history:
-        avatar = "🧑‍💻" if msg["role"] == "user" else "🔍"
+        avatar = USER_AVATAR if msg["role"] == "user" else RETRIVA_AVATAR
         with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
             if msg["role"] == "assistant" and msg.get("sources"):
@@ -984,12 +1015,12 @@ def main():
     user_input = st.chat_input("Ask anything about your documents...")
 
     if user_input:
-        with st.chat_message("user", avatar="🧑‍💻"):
+        with st.chat_message("user", avatar=USER_AVATAR):
             st.write(user_input)
 
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        with st.chat_message("assistant", avatar="🔍"):
+        with st.chat_message("assistant", avatar=RETRIVA_AVATAR):
             with st.spinner("Thinking..."):
                 answer, sources = chat(user_input, st.session_state.memory, mode=st.session_state.mode)
             st.write(answer)
