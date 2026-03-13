@@ -696,6 +696,23 @@ Always mention the source and page number in your answer."""
 # SECTION 11 — STREAMLIT UI
 # ════════════════════════════════════════════════════════════════════════════
 
+def reset_all():
+    global bm25_index, bm25_chunks, processed_hashes
+    st.session_state.chat_history = []
+    st.session_state.memory       = []
+    st.session_state.files_loaded = []
+    query_cache.clear()
+    bm25_index       = None
+    bm25_chunks      = []
+    processed_hashes = set()
+    try:
+        if "chroma_client" in st.session_state:
+            st.session_state.chroma_client.delete_collection("retriva")
+    except:
+        pass
+    st.session_state.pop("chroma_client", None)
+
+
 def main():
 
     st.set_page_config(
@@ -916,20 +933,7 @@ def main():
                 st.write(f"• {src}")
 
         if st.button("🗑️ Clear All", use_container_width=True):
-            global bm25_index, bm25_chunks, processed_hashes
-            st.session_state.chat_history = []
-            st.session_state.memory       = []
-            st.session_state.files_loaded = []
-            query_cache.clear()
-            bm25_index  = None
-            bm25_chunks = []
-            processed_hashes = set()
-            try:
-                if "chroma_client" in st.session_state:
-                    st.session_state.chroma_client.delete_collection("retriva")
-            except:
-                pass
-            st.session_state.pop("chroma_client", None)
+            reset_all()
             st.rerun()
 
     st.divider()
