@@ -59,14 +59,20 @@ def load_models():
     reranker = CrossEncoder("BAAI/bge-reranker-large")
     return embedder, reranker
 
-@st.cache_resource
-def load_chromadb():
-    client     = chromadb.EphemeralClient()
-    collection = client.get_or_create_collection(name="retriva")
-    return client, collection
+def get_collection():
+    """Always returns a valid collection — stored in session_state so it survives reruns."""
+    if "chroma_client" not in st.session_state:
+        st.session_state.chroma_client = chromadb.EphemeralClient()
+    client = st.session_state.chroma_client
+    try:
+        collection = client.get_or_create_collection(name="retriva")
+    except Exception:
+        # Client died — recreate everything
+        st.session_state.chroma_client = chromadb.EphemeralClient()
+        collection = st.session_state.chroma_client.get_or_create_collection(name="retriva")
+    return st.session_state.chroma_client, collection
 
-embedder, reranker        = load_models()
-chroma_client, collection = load_chromadb()
+embedder, reranker = load_models()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -245,7 +251,7 @@ def embed_and_store(chunks, file_hash=None):
     if not chunks:
         return
     # Always get fresh collection reference to avoid stale cache issues
-    _, fresh_collection = load_chromadb()
+    _, fresh_collection = get_collection()
     texts     = [c["text"] for c in chunks]
     ids       = [hashlib.md5(c["text"].encode()).hexdigest() for c in chunks]
     metadatas = [{
@@ -269,7 +275,7 @@ def embed_and_store(chunks, file_hash=None):
 # ════════════════════════════════════════════════════════════════════════════
 
 def vector_search(query, top_k=10):
-    _, fresh_collection = load_chromadb()
+    _, fresh_collection = get_collection()
     query_embedding = embedder.encode([query]).tolist()
     results = fresh_collection.query(
         query_embeddings=query_embedding,
@@ -316,7 +322,7 @@ def rerank(query, chunks, top_k=4):
     return sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
 
 def retrieve(query, top_k=4):
-    _, fresh_collection = load_chromadb()
+    _, fresh_collection = get_collection()
     if fresh_collection.count() == 0:
         return []
     vector_results = vector_search(query, top_k=10)
@@ -627,7 +633,7 @@ def chat(query, memory, mode="rag"):
         return str(e), []
 
     # ── No data check ─────────────────────────────────────────────────────────
-    _, fresh_collection = load_chromadb()
+    _, fresh_collection = get_collection()
     if fresh_collection.count() == 0:
         return (
             "No documents loaded yet! Please upload a PDF, Excel, CSV, or enter a URL first.\n\n"
@@ -914,13 +920,17 @@ def main():
             st.session_state.memory       = []
             st.session_state.files_loaded = []
             query_cache.clear()
-            bm25_chunks.clear() if hasattr(bm25_chunks, 'clear') else None
-            fresh_client, _ = load_chromadb()
+            global bm25_index, bm25_chunks, processed_hashes
+            bm25_index  = None
+            bm25_chunks = []
+            processed_hashes = set()
+            # Nuke and recreate the chroma client cleanly
             try:
-                fresh_client.delete_collection("retriva")
+                if "chroma_client" in st.session_state:
+                    st.session_state.chroma_client.delete_collection("retriva")
             except:
                 pass
-            st.cache_resource.clear()
+            st.session_state.pop("chroma_client", None)
             st.rerun()
 
     st.divider()
