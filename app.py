@@ -161,8 +161,12 @@ def load_url(url):
         for tag in soup(["nav", "header", "footer", "script", "style", "aside"]):
             tag.decompose()
         clean_text = soup.get_text(separator=" ", strip=True)
-        if len(clean_text.strip()) < 200:
-            st.warning("⚠️ The URL returned very little readable content. It may be a JavaScript-rendered page (like a Streamlit app) which can't be scraped. Try a regular webpage, article, or Wikipedia link.")
+        if len(clean_text.strip()) < 50:
+            st.warning(
+                "⚠️ This URL returned no usable content. "
+                "Login-required pages (LinkedIn, Notion, Medium) and JavaScript-rendered apps can't be scraped. "
+                "Try a public article, Wikipedia page, or documentation link."
+            )
             return []
         return [{"text": clean_text, "source": url}]
     except Exception as e:
@@ -997,6 +1001,9 @@ def main():
     # ── Session expired banner ────────────────────────────────────────────────
     _, _col = get_collection()
     if st.session_state.get("files_loaded") and _col.count() == 0:
+        # Collection empty but files_loaded has entries = session expired
+        # Clear stale file list so UI doesn't show ghost files
+        st.session_state.files_loaded = []
         st.warning("⏰ **Session expired** — please re-upload your files and hit ⚡ Process Sources to continue.")
 
     for msg in st.session_state.chat_history:
