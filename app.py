@@ -138,6 +138,20 @@ def _df_to_chunks(df, file_path, sheet_name):
         })
     return chunks
 
+def _smart_read_excel(file_path, sheet_name):
+    """Auto-detects merged title rows and finds the real header row."""
+    # First pass — read raw to inspect
+    raw = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+    # Find the first row where majority of cells are non-null (real header row)
+    for i, row in raw.iterrows():
+        filled = row.notna().sum()
+        unnamed = sum(1 for v in row if str(v).startswith("Unnamed"))
+        # Real header: most cells filled, no "Unnamed" values
+        if filled >= max(2, len(row) * 0.5) and unnamed == 0:
+            return pd.read_excel(file_path, sheet_name=sheet_name, header=i)
+    # Fallback — default read
+    return pd.read_excel(file_path, sheet_name=sheet_name)
+
 def load_tabular(file_path):
     ext    = os.path.splitext(file_path)[1].lower()
     chunks = []
@@ -146,10 +160,15 @@ def load_tabular(file_path):
     elif ext == ".tsv":
         sheets = {"Sheet1": pd.read_csv(file_path, sep="\t")}
     elif ext in [".xlsx", ".xls"]:
-        sheets = pd.read_excel(file_path, sheet_name=None)
+        # Get sheet names first, then smart-read each one
+        xl = pd.ExcelFile(file_path)
+        sheets = {name: _smart_read_excel(file_path, name) for name in xl.sheet_names}
     else:
         return []
     for sheet_name, df in sheets.items():
+        # Drop rows/cols that are entirely empty
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        # Drop rows that look like sub-headers (all string, no numeric data)
         chunks.extend(_df_to_chunks(df, file_path, sheet_name))
     return chunks
 
