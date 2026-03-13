@@ -240,12 +240,13 @@ def get_file_hash(file_path):
 def embed_and_store(chunks, file_hash=None):
     global bm25_index, bm25_chunks
     if file_hash and file_hash in processed_hashes:
-        st.info("File already processed — skipping reembedding")
+        st.info("File already processed — skipping reembedding.")
         return
     if not chunks:
         return
     texts     = [c["text"] for c in chunks]
-    ids       = [f"chunk_{c['chunk_index']}" for c in chunks]
+    # Use content hash as ID — guarantees no duplicates even on reprocess
+    ids       = [hashlib.md5(c["text"].encode()).hexdigest() for c in chunks]
     metadatas = [{
         "source": str(c.get("source", "unknown")),
         "page":   str(c.get("page")  or ""),
@@ -254,9 +255,11 @@ def embed_and_store(chunks, file_hash=None):
         "tokens": int(c.get("tokens", 0)),
     } for c in chunks]
     embeddings = embedder.encode(texts, show_progress_bar=False).tolist()
-    collection.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
-    bm25_chunks = chunks
-    tokenized   = [c["text"].lower().split() for c in chunks]
+    # upsert = insert if new, update if exists — never crashes on duplicates
+    collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
+    # Append to bm25 instead of replacing — supports multiple files
+    bm25_chunks += chunks
+    tokenized   = [c["text"].lower().split() for c in bm25_chunks]
     bm25_index  = BM25Okapi(tokenized)
     if file_hash:
         processed_hashes.add(file_hash)
@@ -512,14 +515,33 @@ FAQ_TRIGGERS = [
     },
 ]
 
-def check_faq(query):
-    """Returns FAQ answer if query matches any trigger, else None.
-    Uses exact-phrase priority — longer/specific keywords checked first via list order."""
+def check_faq(query, fuzzy=True):
+    """Returns (category, answer) if query matches any trigger, else (None, None).
+    Uses exact-phrase priority — longer/specific keywords checked first via list order.
+    fuzzy=True also catches common typos by checking character-level similarity."""
     q = query.lower().strip()
+
+    # exact match first
     for faq in FAQ_TRIGGERS:
         if any(keyword in q for keyword in faq["keywords"]):
-            return faq["answer"]
-    return None
+            return faq["category"], faq["answer"]
+
+    # fuzzy match — catches typos like "who are oyu", "hwo are you"
+    if fuzzy and len(q) > 4:
+        for faq in FAQ_TRIGGERS:
+            for keyword in faq["keywords"]:
+                if len(keyword) < 6:
+                    continue  # skip short keywords for fuzzy — too many false positives
+                # check if 80%+ of keyword chars appear in query in order (subsequence)
+                ki, qi = 0, 0
+                while ki < len(keyword) and qi < len(q):
+                    if keyword[ki] == q[qi]:
+                        ki += 1
+                    qi += 1
+                if ki / len(keyword) >= 0.82:
+                    return faq["category"], faq["answer"]
+
+    return None, None
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -544,9 +566,12 @@ def compress_context(chunks, max_tokens=1500):
 
 def chat_groq_ai(query, memory):
     """Groq AI mode — answers from Llama3 general knowledge, no document context."""
+    # Only flag as doc-specific if query contains SPECIFIC doc phrases, not just "data"
     doc_hints = [
-        "column", "row", "file", "csv", "pdf", "excel", "sheet",
-        "uploaded", "document", "table", "data", "rows", "columns",
+        "my csv", "my pdf", "my excel", "my file", "my document", "my sheet",
+        "uploaded file", "uploaded csv", "uploaded pdf", "the csv", "the pdf",
+        "the excel", "the document", "the file", "in the sheet", "the table",
+        "how many rows", "how many columns", "column names", "my data",
     ]
     q = query.lower()
     if any(hint in q for hint in doc_hints):
@@ -558,7 +583,8 @@ def chat_groq_ai(query, memory):
 
     system_prompt = """You are Retriva — a smart AI assistant powered by Llama3 (via Groq).
 You are currently in Groq AI mode — answer from your general knowledge.
-Be conversational, helpful, and concise. If you don't know something, say so honestly."""
+Be conversational, helpful, and concise. If you don't know something, say so honestly.
+Note: your training data has a cutoff of early 2024 — for very recent events, mention this limitation."""
 
     messages  = [{"role": "system", "content": system_prompt}]
     messages += memory
@@ -580,13 +606,16 @@ def chat(query, memory, mode="rag"):
 
     # ── Groq AI mode — bypass RAG entirely ───────────────────────────────────
     if mode == "groq":
-        faq_answer = check_faq(query)
-        if faq_answer:
+        # Only intercept identity/privacy/capability/memory FAQs in Groq mode
+        # Greetings, howru, thanks, farewell → let Groq answer naturally
+        GROQ_FAQ_CATEGORIES = {"identity", "privacy", "capability", "memory", "confused"}
+        category, faq_answer = check_faq(query)
+        if category in GROQ_FAQ_CATEGORIES and faq_answer:
             return faq_answer, []
         return chat_groq_ai(query, memory)
 
     # ── FAQ check — before RAG pipeline ───────────────────────────────────────
-    faq_answer = check_faq(query)
+    _, faq_answer = check_faq(query)
     if faq_answer:
         return faq_answer, []
 
@@ -766,7 +795,25 @@ def main():
     </style>
 
     <div class="retriva-hero">
-        <div class="retriva-logo">🔍</div>
+        <svg width="52" height="52" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+          <defs>
+            <linearGradient id="gstar" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#6C63FF"/>
+              <stop offset="60%" stop-color="#7B9FE0"/>
+              <stop offset="100%" stop-color="#48CAE4"/>
+            </linearGradient>
+            <linearGradient id="gdark" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#4A44B0"/>
+              <stop offset="100%" stop-color="#2A8AAF"/>
+            </linearGradient>
+          </defs>
+          <g transform="translate(50,50)">
+            <polygon points="0,-44 10,-10 44,0 10,10 0,44 -10,10 -44,0 -10,-10" fill="url(#gstar)"/>
+            <polygon points="0,-20 14,0 0,20 -14,0" fill="url(#gdark)" opacity="0.6"/>
+            <polygon points="0,-10 10,0 0,10 -10,0" fill="url(#gstar)" opacity="0.9"/>
+            <circle cx="0" cy="0" r="48" fill="none" stroke="url(#gstar)" stroke-width="1" stroke-dasharray="4 4" opacity="0.3"/>
+          </g>
+        </svg>
         <div>
             <div class="retriva-title">Retriva</div>
             <div class="retriva-sub">Smart document chatbot — PDF, Excel, CSV, URL &nbsp;|&nbsp; Built by Tharun Pranav K S</div>
@@ -808,7 +855,6 @@ def main():
         url_input = st.text_input("Or enter a URL:", placeholder="https://...")
 
         if st.button("⚡ Process Sources", use_container_width=True):
-            all_docs = []
 
             for uploaded_file in uploaded_files:
                 temp_path = f"/tmp/{uploaded_file.name}"
@@ -817,7 +863,10 @@ def main():
                 try:
                     check_file_size(temp_path)
                     file_hash = get_file_hash(temp_path)
-                    ext       = os.path.splitext(uploaded_file.name)[1].lower()
+                    if file_hash in processed_hashes:
+                        st.info(f"⏭️ {uploaded_file.name} already processed — skipping.")
+                        continue
+                    ext = os.path.splitext(uploaded_file.name)[1].lower()
                     with st.spinner(f"Loading {uploaded_file.name}..."):
                         if ext == ".pdf":
                             docs = load_pdf(temp_path)
@@ -825,28 +874,32 @@ def main():
                             docs = load_tabular(temp_path)
                         else:
                             docs = []
-                    all_docs.extend(docs)
-                    st.session_state.files_loaded.append(uploaded_file.name)
-                    st.success(f"✅ {uploaded_file.name} loaded")
+                    if docs:
+                        with st.spinner(f"Embedding {uploaded_file.name}..."):
+                            chunks = chunk_documents(docs)
+                            embed_and_store(chunks, file_hash=file_hash)
+                        st.session_state.files_loaded.append(uploaded_file.name)
+                        st.success(f"✅ {uploaded_file.name} — {len(chunks)} chunks embedded!")
                 except ValueError as e:
                     st.error(str(e))
 
             if url_input:
                 try:
                     check_url(url_input)
-                    with st.spinner(f"Scraping {url_input}..."):
-                        docs = load_url(url_input)
-                    all_docs.extend(docs)
-                    st.session_state.files_loaded.append(url_input)
-                    st.success(f"✅ URL loaded")
+                    url_hash = hashlib.md5(url_input.encode()).hexdigest()
+                    if url_hash in processed_hashes:
+                        st.info(f"⏭️ URL already processed — skipping.")
+                    else:
+                        with st.spinner(f"Scraping {url_input}..."):
+                            docs = load_url(url_input)
+                        if docs:
+                            with st.spinner("Embedding URL content..."):
+                                chunks = chunk_documents(docs)
+                                embed_and_store(chunks, file_hash=url_hash)
+                            st.session_state.files_loaded.append(url_input)
+                            st.success(f"✅ URL — {len(chunks)} chunks embedded!")
                 except ValueError as e:
                     st.error(str(e))
-
-            if all_docs:
-                with st.spinner("Chunking and embedding..."):
-                    chunks = chunk_documents(all_docs)
-                    embed_and_store(chunks)
-                st.success(f"✅ {len(chunks)} chunks embedded and ready!")
 
         if st.session_state.files_loaded:
             st.divider()
