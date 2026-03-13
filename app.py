@@ -23,7 +23,6 @@ from PIL import Image
 from bs4 import BeautifulSoup
 from langchain_community.document_loaders import WebBaseLoader
 
-import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -162,7 +161,7 @@ def load_pdf(file_path):
 
 
 MAX_ROWS_FULL    = 500    # embed all rows below this
-MAX_ROWS_SAMPLE  = 3000  # sample cap for very large files
+MAX_ROWS_SAMPLE  = 1000  # sample cap for large files — keeps RAM manageable
 SAMPLE_THRESHOLD = 500   # trigger sampling above this
 
 def _df_to_chunks(df, file_path, sheet_name):
@@ -283,23 +282,37 @@ def check_url(url):
         raise ValueError("Blocked URL — internal/private addresses not allowed.")
 
 def check_prompt_injection(query):
-    patterns = [
+    import re
+    # Normalize whitespace and remove spaces between letters to catch "ig nore" → "ignore"
+    q_normal  = query.lower().strip()
+    q_compact = re.sub(r'\s+', '', q_normal)  # remove ALL spaces for bypass detection
+
+    patterns_normal = [
         "ignore previous instructions", "ignore all instructions",
         "ignore the above", "ignore the instructions above",
         "disregard the above", "disregard previous",
         "disregard the instructions", "disregard all",
         "you are now", "forget everything", "forget the above",
         "act as", "pretend you are", "pretend to be",
-        "jailbreak", "disregard", "override instructions",
+        "jailbreak", "override instructions",
         "system prompt", "new instruction", "new persona",
         "your new role", "you must now", "from now on you",
         "repeat after me", "print your instructions",
         "reveal your prompt", "show your prompt",
         "what are your instructions", "ignore context",
     ]
-    query_lower = query.lower()
-    for pattern in patterns:
-        if pattern in query_lower:
+    # Also check compact (no-space) version for bypass attempts
+    patterns_compact = [
+        "ignoreprevious", "ignoreall", "ignoreinstructions",
+        "disregardall", "disregardprevious", "forgeteverything",
+        "systemPrompt", "systemprompt", "jailbreak",
+        "actas", "pretendyouare",
+    ]
+    for pattern in patterns_normal:
+        if pattern in q_normal:
+            raise ValueError("🔒 Blocked: potential prompt injection detected.")
+    for pattern in patterns_compact:
+        if pattern in q_compact:
             raise ValueError("🔒 Blocked: potential prompt injection detected.")
 
 
@@ -307,9 +320,9 @@ def check_prompt_injection(query):
 # SECTION 5 — CHUNKER
 # ════════════════════════════════════════════════════════════════════════════
 
-def count_tokens(text, model="cl100k_base"):
-    enc = tiktoken.get_encoding(model)
-    return len(enc.encode(text))
+def count_tokens(text):
+    """Fast approximate token count — avoids tiktoken overhead per chunk."""
+    return len(text) // 4
 
 def chunk_documents(docs, chunk_size=512, overlap=50):
     splitter = RecursiveCharacterTextSplitter(
@@ -344,8 +357,12 @@ def chunk_documents(docs, chunk_size=512, overlap=50):
 # ════════════════════════════════════════════════════════════════════════════
 
 def get_file_hash(file_path):
+    """Stream file in 4KB chunks — prevents RAM spike on large files."""
+    hash_md5 = hashlib.md5()
     with open(file_path, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
 
 def get_bm25():
     """Get session-isolated BM25 state."""
@@ -371,13 +388,14 @@ def embed_and_store(chunks, file_hash=None):
     texts     = [c["text"] for c in chunks]
     ids       = [hashlib.md5(c["text"].encode()).hexdigest() for c in chunks]
     metadatas = [{
-        "source": str(c.get("source", "unknown")),
-        "page":   str(c.get("page")  or ""),
-        "sheet":  str(c.get("sheet") or ""),
-        "rows":   str(c.get("rows")  or ""),
-        "tokens": int(c.get("tokens", 0)),
+        "source":      str(c.get("source", "unknown")),
+        "page":        str(c.get("page")        or ""),
+        "sheet":       str(c.get("sheet")       or ""),
+        "rows":        str(c.get("rows")        or ""),
+        "tokens":      int(c.get("tokens",       0)),
+        "chunk_index": str(c.get("chunk_index") or ""),
     } for c in chunks]
-    embeddings = embedder.encode(texts, show_progress_bar=False).tolist()
+    embeddings = embedder.encode(texts, batch_size=32, show_progress_bar=False).tolist()
     fresh_collection.upsert(ids=ids, documents=texts, embeddings=embeddings, metadatas=metadatas)
     st.session_state.bm25_chunks += chunks
     tokenized = [c["text"].lower().split() for c in st.session_state.bm25_chunks]
@@ -429,8 +447,6 @@ def bm25_search(query, top_k=10):
             })
     return chunks
 
-RERANK_THRESHOLD = -2.0  # drop chunks below this reranker score
-
 def rerank(query, chunks, top_k=4):
     if not chunks:
         return []
@@ -438,11 +454,8 @@ def rerank(query, chunks, top_k=4):
     scores = reranker.predict(pairs)
     for i, chunk in enumerate(chunks):
         chunk["rerank_score"] = float(scores[i])
-    # Filter out low-confidence chunks to reduce hallucinations
-    filtered = [c for c in chunks if c["rerank_score"] >= RERANK_THRESHOLD]
-    if not filtered:
-        filtered = chunks  # fallback — keep all if everything is below threshold
-    return sorted(filtered, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
+    # Sort by score and return top_k — no threshold, avoids dropping good results
+    return sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
 
 def is_simple_query(query):
     """Skip rewrite for short, clear queries — saves one Groq API call."""
@@ -805,6 +818,11 @@ Always mention the source and page number in your answer."""
                     return "⚠️ Groq rate limit hit — please wait a moment and try again.", []
                 return f"⚠️ LLM error: {err}", []
 
+    # Cache eviction — cap at 100 entries to prevent memory growth
+    if len(st.session_state.query_cache) > 100:
+        oldest_keys = list(st.session_state.query_cache.keys())[:50]
+        for k in oldest_keys:
+            del st.session_state.query_cache[k]
     st.session_state.query_cache[cache_key] = answer
     return answer, chunks
 
@@ -901,6 +919,50 @@ def main():
         letter-spacing: 0.08em;
     }
 
+    /* ── Mobile sidebar toggle button — make it obvious ── */
+    [data-testid="collapsedControl"] {
+        background: linear-gradient(135deg, #6C63FF, #48CAE4) !important;
+        border-radius: 0 10px 10px 0 !important;
+        width: 36px !important;
+        top: 12px !important;
+    }
+    [data-testid="collapsedControl"] svg {
+        fill: white !important;
+    }
+
+    /* ── Mobile responsive ── */
+    @media (max-width: 768px) {
+        .retriva-title {
+            font-size: 1.6rem !important;
+        }
+        .retriva-sub {
+            font-size: 0.72rem !important;
+        }
+        .retriva-logo svg {
+            width: 36px !important;
+            height: 36px !important;
+        }
+        [data-testid="stChatMessage"] {
+            padding: 8px 10px !important;
+        }
+        .mobile-upload-hint {
+            display: block !important;
+        }
+    }
+
+    /* ── Mobile upload hint banner ── */
+    .mobile-upload-hint {
+        display: none;
+        background: linear-gradient(135deg, #6C63FF22, #48CAE422);
+        border: 1px solid #6C63FF55;
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        font-size: 0.82rem;
+        color: #a0a0c0;
+        text-align: center;
+    }
+
     /* ── Process button ── */
     div[data-testid="stButton"] button[kind="secondary"] {
         background: linear-gradient(135deg, #6C63FF, #48CAE4) !important;
@@ -945,6 +1007,9 @@ def main():
             <div class="retriva-title">Retriva</div>
             <div class="retriva-sub">Smart document chatbot — PDF, Excel, CSV, URL &nbsp;|&nbsp; Built by Tharun Pranav K S</div>
         </div>
+    </div>
+    <div class="mobile-upload-hint">
+        📂 Tap the <strong>&gt;</strong> arrow (top-left) to upload your documents
     </div>
     """, unsafe_allow_html=True)
 
@@ -997,8 +1062,9 @@ def main():
             sid = st.session_state.session_id  # use session_id to isolate temp files
 
             for uploaded_file in uploaded_files:
+                import uuid as _uuid
                 safe_name  = uploaded_file.name.replace("/", "_").replace("\\", "_")
-                temp_path  = f"/tmp/{sid}_{safe_name}"
+                temp_path  = f"/tmp/{sid}_{_uuid.uuid4().hex[:8]}_{safe_name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 try:
