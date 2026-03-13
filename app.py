@@ -8,7 +8,10 @@
 
 import os
 import io
+import json
+import time
 import hashlib
+from datetime import datetime
 from collections import deque
 
 import numpy as np
@@ -47,6 +50,56 @@ except:
     GROQ_API_KEY = st.secrets.get('GROQ_API_KEY')
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SECTION 1B — GOOGLE SHEETS LOGGING
+# ════════════════════════════════════════════════════════════════════════════
+
+@st.cache_resource
+def get_sheets_client():
+    """Initialize Google Sheets client — cached so it loads once."""
+    try:
+        from google.oauth2.service_account import Credentials
+        import gspread
+        creds_json = st.secrets.get("GOOGLE_SHEETS_CREDS", "")
+        if not creds_json:
+            return None
+        creds_dict = json.loads(creds_json)
+        scopes     = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds      = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+def log_to_sheets(name, session_id, query, mode, response_time_ms,
+                  file_types, answer_type, answer_length, browser, os_info):
+    """Silently log one row to Google Sheets — never crashes the app."""
+    try:
+        gc = get_sheets_client()
+        if gc is None:
+            return
+        sheet_id = st.secrets.get("GOOGLE_SHEET_ID", "")
+        if not sheet_id:
+            return
+        sh        = gc.open_by_key(sheet_id)
+        worksheet = sh.sheet1
+        row = [
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            name,
+            session_id,
+            query[:200],  # cap at 200 chars
+            mode,
+            response_time_ms,
+            file_types,
+            answer_type,
+            answer_length,
+            browser,
+            os_info,
+        ]
+        worksheet.append_row(row, value_input_option="USER_ENTERED")
+    except Exception:
+        pass  # never crash the app due to logging failure
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -932,6 +985,27 @@ def main():
         st.session_state.session_id = hashlib.md5(
             str(id(st.session_state)).encode()
         ).hexdigest()[:12]
+    if "user_name" not in st.session_state:
+        st.session_state.user_name = None
+    if "browser_info" not in st.session_state:
+        try:
+            ctx = st.context
+            ua  = getattr(ctx, "headers", {}).get("user-agent", "Unknown") if ctx else "Unknown"
+            # Parse browser and OS from user agent
+            if "Chrome" in ua:   browser = "Chrome"
+            elif "Firefox" in ua: browser = "Firefox"
+            elif "Safari" in ua:  browser = "Safari"
+            elif "Edge" in ua:    browser = "Edge"
+            else:                 browser = "Other"
+            if "Windows" in ua:   os_info = "Windows"
+            elif "Mac" in ua:     os_info = "Mac"
+            elif "Linux" in ua:   os_info = "Linux"
+            elif "Android" in ua: os_info = "Android"
+            elif "iPhone" in ua:  os_info = "iOS"
+            else:                 os_info = "Other"
+            st.session_state.browser_info = {"browser": browser, "os": os_info}
+        except Exception:
+            st.session_state.browser_info = {"browser": "Unknown", "os": "Unknown"}
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "memory" not in st.session_state:
@@ -1080,6 +1154,20 @@ def main():
                             f"Sheet: {src['metadata']['sheet']}"
                         )
 
+    # ── Name popup — first visit only ────────────────────────────────────────
+    if not st.session_state.user_name:
+        with st.form("name_form"):
+            st.markdown("### 👋 Welcome to Retriva!")
+            st.markdown("Enter your name to get started:")
+            name_input = st.text_input("Your name", placeholder="e.g. Tharun")
+            submitted  = st.form_submit_button("Let's go 🚀", use_container_width=True)
+            if submitted and name_input.strip():
+                st.session_state.user_name = name_input.strip()
+                st.rerun()
+            elif submitted:
+                st.warning("Please enter your name to continue.")
+        st.stop()
+
     user_input = st.chat_input("Ask anything about your documents...")
 
     if user_input:
@@ -1090,7 +1178,9 @@ def main():
 
         with st.chat_message("assistant", avatar=RETRIVA_AVATAR):
             with st.spinner("Thinking..."):
+                t_start = time.time()
                 answer, sources = chat(user_input, st.session_state.memory, mode=st.session_state.mode)
+                response_time_ms = int((time.time() - t_start) * 1000)
             st.write(answer)
             if sources:
                 with st.expander("📌 Sources"):
@@ -1100,6 +1190,34 @@ def main():
                             f"Page: {src['metadata']['page']} | "
                             f"Sheet: {src['metadata']['sheet']}"
                         )
+
+        # ── Log to Google Sheets ──────────────────────────────────────────────
+        file_types  = ", ".join(set(
+            f.split(".")[-1].upper()
+            for f in st.session_state.files_loaded
+            if "." in f
+        )) or "None"
+        # Determine answer type
+        _, faq_ans = check_faq(user_input)
+        if faq_ans:
+            answer_type = "FAQ"
+        elif st.session_state.mode == "groq":
+            answer_type = "Groq AI"
+        else:
+            answer_type = "RAG Pipeline"
+
+        log_to_sheets(
+            name             = st.session_state.user_name,
+            session_id       = st.session_state.session_id,
+            query            = user_input,
+            mode             = "Groq AI" if st.session_state.mode == "groq" else "RAG",
+            response_time_ms = response_time_ms,
+            file_types       = file_types,
+            answer_type      = answer_type,
+            answer_length    = len(answer),
+            browser          = st.session_state.browser_info.get("browser", "Unknown"),
+            os_info          = st.session_state.browser_info.get("os", "Unknown"),
+        )
 
         st.session_state.chat_history.append({
             "role":    "assistant",

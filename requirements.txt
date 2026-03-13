@@ -15,3 +15,5 @@ tiktoken
 openpyxl
 xlrd
 python-dotenv
+gspread
+google-auth
