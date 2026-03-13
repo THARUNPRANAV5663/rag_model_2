@@ -12,7 +12,6 @@ import json
 import time
 import hashlib
 from datetime import datetime
-from collections import deque
 
 import numpy as np
 import pandas as pd
@@ -45,9 +44,13 @@ os.environ["USER_AGENT"] = "Retriva/1.0"
 try:
     from dotenv import load_dotenv
     load_dotenv()
-    GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-except:
-    GROQ_API_KEY = st.secrets.get('GROQ_API_KEY')
+except Exception:
+    pass
+
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY') or st.secrets.get('GROQ_API_KEY', '')
+if not GROQ_API_KEY:
+    st.error("⚠️ GROQ_API_KEY not found. Please set it in Streamlit secrets or .env file.")
+    st.stop()
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -259,22 +262,45 @@ def check_file_size(file_path, max_mb=20):
         raise ValueError(f"File too large: {size_mb:.1f}MB — max {max_mb}MB")
 
 def check_url(url):
+    import ipaddress
     if not url.startswith(("http://", "https://")):
         raise ValueError("Invalid URL — must start with http:// or https://")
-    blocked = ["localhost", "127.0.0.1", "0.0.0.0"]
-    if any(b in url for b in blocked):
-        raise ValueError("Blocked URL")
+    # Block internal/private IPs and hostnames
+    blocked_hosts = [
+        "localhost", "127.0.0.1", "0.0.0.0",
+        "169.254.",          # AWS metadata / link-local
+        "10.",               # private class A
+        "192.168.",          # private class C
+        "172.16.", "172.17.", "172.18.", "172.19.",
+        "172.20.", "172.21.", "172.22.", "172.23.",
+        "172.24.", "172.25.", "172.26.", "172.27.",
+        "172.28.", "172.29.", "172.30.", "172.31.",  # private class B
+        "metadata.google",   # GCP metadata
+        "169.254.169.254",   # cloud metadata universal
+    ]
+    url_lower = url.lower()
+    if any(b in url_lower for b in blocked_hosts):
+        raise ValueError("Blocked URL — internal/private addresses not allowed.")
 
 def check_prompt_injection(query):
     patterns = [
         "ignore previous instructions", "ignore all instructions",
-        "you are now", "forget everything", "act as",
-        "jailbreak", "disregard", "override", "system prompt",
+        "ignore the above", "ignore the instructions above",
+        "disregard the above", "disregard previous",
+        "disregard the instructions", "disregard all",
+        "you are now", "forget everything", "forget the above",
+        "act as", "pretend you are", "pretend to be",
+        "jailbreak", "disregard", "override instructions",
+        "system prompt", "new instruction", "new persona",
+        "your new role", "you must now", "from now on you",
+        "repeat after me", "print your instructions",
+        "reveal your prompt", "show your prompt",
+        "what are your instructions", "ignore context",
     ]
     query_lower = query.lower()
     for pattern in patterns:
         if pattern in query_lower:
-            raise ValueError("Blocked: potential prompt injection detected.")
+            raise ValueError("🔒 Blocked: potential prompt injection detected.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -786,7 +812,7 @@ def reset_all():
     try:
         if "chroma_client" in st.session_state:
             st.session_state.chroma_client.delete_collection(col_name)
-    except:
+    except Exception:
         pass
     st.session_state.pop("chroma_client", None)
 
@@ -906,9 +932,8 @@ def main():
 
     # ── Session state ─────────────────────────────────────────────────────────
     if "session_id" not in st.session_state:
-        st.session_state.session_id = hashlib.md5(
-            str(id(st.session_state)).encode()
-        ).hexdigest()[:12]
+        import uuid
+        st.session_state.session_id = str(uuid.uuid4()).replace("-", "")[:16]
     if "user_name" not in st.session_state:
         st.session_state.user_name = None
     if "browser_info" not in st.session_state:
@@ -951,9 +976,11 @@ def main():
 
         if st.button("⚡ Process Sources", use_container_width=True):
             get_bm25()  # ensure session_state keys initialized
+            sid = st.session_state.session_id  # use session_id to isolate temp files
 
             for uploaded_file in uploaded_files:
-                temp_path = f"/tmp/{uploaded_file.name}"
+                safe_name  = uploaded_file.name.replace("/", "_").replace("\\", "_")
+                temp_path  = f"/tmp/{sid}_{safe_name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 try:
@@ -979,6 +1006,10 @@ def main():
                         st.success(f"✅ {uploaded_file.name} — {len(chunks)} chunks embedded!")
                 except ValueError as e:
                     st.error(str(e))
+                finally:
+                    # Always delete temp file — don't leave user data on disk
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
 
             if url_input:
                 try:
