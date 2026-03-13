@@ -522,32 +522,12 @@ FAQ_TRIGGERS = [
     },
 ]
 
-def check_faq(query, fuzzy=True):
-    """Returns (category, answer) if query matches any trigger, else (None, None).
-    Uses exact-phrase priority — longer/specific keywords checked first via list order.
-    fuzzy=True also catches common typos by checking character-level similarity."""
+def check_faq(query):
+    """Returns (category, answer) if query matches any trigger, else (None, None)."""
     q = query.lower().strip()
-
-    # exact match first
     for faq in FAQ_TRIGGERS:
         if any(keyword in q for keyword in faq["keywords"]):
             return faq["category"], faq["answer"]
-
-    # fuzzy match — catches typos like "who are oyu", "hwo are you"
-    if fuzzy and len(q) > 4:
-        for faq in FAQ_TRIGGERS:
-            for keyword in faq["keywords"]:
-                if len(keyword) < 6:
-                    continue  # skip short keywords for fuzzy — too many false positives
-                # check if 80%+ of keyword chars appear in query in order (subsequence)
-                ki, qi = 0, 0
-                while ki < len(keyword) and qi < len(q):
-                    if keyword[ki] == q[qi]:
-                        ki += 1
-                    qi += 1
-                if ki / len(keyword) >= 0.82:
-                    return faq["category"], faq["answer"]
-
     return None, None
 
 
@@ -635,6 +615,13 @@ def chat(query, memory, mode="rag"):
     # ── No data check ─────────────────────────────────────────────────────────
     _, fresh_collection = get_collection()
     if fresh_collection.count() == 0:
+        # Check if user had files loaded before — means session expired
+        if st.session_state.get("files_loaded"):
+            return (
+                "⏰ **Session expired** — your documents were cleared due to inactivity.\n\n"
+                "Streamlit Cloud sleeps after a few minutes of inactivity and resets all in-memory data.\n\n"
+                "Please re-upload your files and hit **⚡ Process Sources** to continue. Sorry for the inconvenience!"
+            ), []
         return (
             "No documents loaded yet! Please upload a PDF, Excel, CSV, or enter a URL first.\n\n"
             "Not sure how to start? Ask me **'how to use'** 😊"
@@ -903,7 +890,8 @@ def main():
                         with st.spinner(f"Embedding {uploaded_file.name}..."):
                             chunks = chunk_documents(docs)
                             embed_and_store(chunks, file_hash=file_hash)
-                        st.session_state.files_loaded.append(uploaded_file.name)
+                        if uploaded_file.name not in st.session_state.files_loaded:
+                            st.session_state.files_loaded.append(uploaded_file.name)
                         st.success(f"✅ {uploaded_file.name} — {len(chunks)} chunks embedded!")
                 except ValueError as e:
                     st.error(str(e))
@@ -921,7 +909,8 @@ def main():
                             with st.spinner("Embedding URL content..."):
                                 chunks = chunk_documents(docs)
                                 embed_and_store(chunks, file_hash=url_hash)
-                            st.session_state.files_loaded.append(url_input)
+                            if url_input not in st.session_state.files_loaded:
+                                st.session_state.files_loaded.append(url_input)
                             st.success(f"✅ URL — {len(chunks)} chunks embedded!")
                 except ValueError as e:
                     st.error(str(e))
@@ -937,6 +926,11 @@ def main():
             st.rerun()
 
     st.divider()
+
+    # ── Session expired banner ────────────────────────────────────────────────
+    _, _col = get_collection()
+    if st.session_state.get("files_loaded") and _col.count() == 0:
+        st.warning("⏰ **Session expired** — please re-upload your files and hit ⚡ Process Sources to continue.")
 
     for msg in st.session_state.chat_history:
         avatar = "🧑‍💻" if msg["role"] == "user" else "🔍"
