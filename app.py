@@ -372,43 +372,10 @@ Rewrite this query:"""
 # Catches identity, privacy, capability questions before RAG pipeline
 # ════════════════════════════════════════════════════════════════════════════
 
-FAQ_TRIGGERS = {
-    "greeting": {
-        "keywords": [
-            "hello", "hi", "hey", "heyy", "heyyy", "hii", "hiii",
-            "good morning", "good afternoon", "good evening", "good night",
-            "howdy", "sup", "what's up", "whats up", "wassup", "yo",
-            "greetings", "namaste", "vanakkam", "hola",
-        ],
-        "answer": (
-            "Hey there! 👋 Welcome to **Retriva**!\n\n"
-            "I'm your smart document assistant. Upload a PDF, Excel, CSV, or paste a URL — "
-            "and I'll answer anything from it instantly.\n\n"
-            "Want to get started? Try uploading a file from the sidebar! 🚀"
-        )
-    },
-    "thanks": {
-        "keywords": [
-            "thank you", "thanks", "thankyou", "thx", "ty", "thank u",
-            "appreciate it", "appreciated", "cheers", "nice one", "good job",
-            "well done", "great job", "awesome", "perfect", "great",
-        ],
-        "answer": (
-            "You're welcome! 😊 Happy to help.\n\n"
-            "Got more questions? Just ask — I'm here!"
-        )
-    },
-    "farewell": {
-        "keywords": [
-            "bye", "goodbye", "see you", "see ya", "cya", "later",
-            "take care", "gotta go", "ttyl", "talk later", "good bye",
-        ],
-        "answer": (
-            "Goodbye! 👋 Come back anytime with more documents to explore.\n\n"
-            "Have a great day! 🌟"
-        )
-    },
-    "identity": {
+# Order matters — specific phrases checked before broad single words
+FAQ_TRIGGERS = [
+    {
+        "category": "identity",
         "keywords": [
             "who are you", "who r u", "who ru", "who are u", "whos this",
             "who's this", "who built you", "who made you", "who created you",
@@ -418,15 +385,38 @@ FAQ_TRIGGERS = {
             "are you human", "are you real", "what kind of ai", "which ai",
             "what model are you", "what llm", "who is kstp", "what is kstp",
             "tell me about you", "about you", "about yourself",
+            "are you a rag", "complete rag", "pretrained", "pre trained",
+            "do you have knowledge", "general knowledge",
         ],
         "answer": (
             "Hey! I'm **Retriva** 👋 — a smart document chatbot built by **Tharun Pranav K S**.\n\n"
             "I'm not ChatGPT or any OpenAI product. I'm powered by **Llama3 (via Groq)** "
             "with hybrid retrieval (semantic + keyword search) and a reranker under the hood.\n\n"
+            "In **RAG mode** I answer strictly from your uploaded documents. "
+            "Switch to **Groq AI mode** (top-right toggle) to chat using Llama3's general knowledge.\n\n"
             "Upload a PDF, Excel, CSV, or paste a URL — and I'll answer anything from it. Let's go! 🚀"
         )
     },
-    "privacy": {
+    {
+        "category": "capability",
+        "keywords": [
+            "what can you do", "what do you support", "file types", "what files",
+            "can you read pdf", "can you read excel", "supported formats",
+            "how does this work", "how do you work", "what's your purpose",
+            "what is your purpose", "how to use", "get started", "help",
+        ],
+        "answer": (
+            "Here's what I can do 💡\n\n"
+            "📄 **PDFs** — digital & scanned (OCR supported)\n"
+            "📊 **Excel** — .xlsx, .xls (multi-sheet)\n"
+            "📋 **CSV / TSV** — tabular data\n"
+            "🌐 **URLs** — scrape and answer from any webpage\n\n"
+            "🔀 **Two modes** — RAG (document-only) or Groq AI (general knowledge) via the top-right toggle.\n\n"
+            "Just upload your file or paste a URL, hit **⚡ Process Sources**, and ask me anything!"
+        )
+    },
+    {
+        "category": "privacy",
         "keywords": [
             "store my data", "store my pdf", "save my data", "send my data",
             "is my pdf safe", "data safe", "uploaded anywhere", "data privacy",
@@ -441,23 +431,8 @@ FAQ_TRIGGERS = {
             "Once you close the session, it's all gone. You can safely upload confidential documents!"
         )
     },
-    "capability": {
-        "keywords": [
-            "what can you do", "what do you support", "file types", "what files",
-            "can you read pdf", "can you read excel", "supported formats",
-            "how does this work", "how do you work", "what's your purpose",
-            "what is your purpose", "how to use", "get started", "help",
-        ],
-        "answer": (
-            "Here's what I can do 💡\n\n"
-            "📄 **PDFs** — digital & scanned (OCR supported)\n"
-            "📊 **Excel** — .xlsx, .xls (multi-sheet)\n"
-            "📋 **CSV / TSV** — tabular data\n"
-            "🌐 **URLs** — scrape and answer from any webpage\n\n"
-            "Just upload your file or paste a URL, hit **⚡ Process Sources**, and ask me anything!"
-        )
-    },
-    "memory": {
+    {
+        "category": "memory",
         "keywords": [
             "remember previous", "remember chats", "chat history",
             "previous conversations", "do you remember", "your memory",
@@ -467,11 +442,12 @@ FAQ_TRIGGERS = {
             "I don't retain any memory across sessions — each session starts fresh."
         )
     },
-    "confused": {
+    {
+        "category": "confused",
         "keywords": [
-            "i don't understand", "i dont understand", "confused", "not sure",
+            "i don't understand", "i dont understand", "confused",
             "what do you mean", "can you explain", "explain that",
-            "how does that work", "lost", "huh", "what?", "pardon",
+            "how does that work", "lost", "pardon",
         ],
         "answer": (
             "No worries! 😊 Let me break it down:\n\n"
@@ -481,14 +457,68 @@ FAQ_TRIGGERS = {
             "I'll find the answer and tell you exactly which page or row it came from!"
         )
     },
-}
+    {
+        "category": "thanks",
+        "keywords": [
+            "thank you", "thanks", "thankyou", "thx", "ty", "thank u",
+            "appreciate it", "appreciated", "cheers", "nice one", "good job",
+            "well done", "great job", "you are great", "ur great", "you're great",
+            "you are good", "you're good", "ur good", "retriva is great",
+            "retriva is good", "awesome", "perfect", "great answer",
+            "good answer", "well answered",
+        ],
+        "answer": (
+            "Thank you, that means a lot! 😊\n\n"
+            "Got more questions? Just ask — I'm here!"
+        )
+    },
+    {
+        "category": "farewell",
+        "keywords": [
+            "bye", "goodbye", "see you", "see ya", "cya", "later",
+            "take care", "gotta go", "ttyl", "talk later", "good bye",
+        ],
+        "answer": (
+            "Goodbye! 👋 Come back anytime with more documents to explore.\n\n"
+            "Have a great day! 🌟"
+        )
+    },
+    {
+        "category": "howru",
+        "keywords": [
+            "how are you", "how r u", "how are u", "how r you",
+            "how's it going", "hows it going", "how do you do",
+            "you doing", "you okay", "you good", "all good",
+        ],
+        "answer": (
+            "I'm doing great, thanks for asking! 😄\n\n"
+            "Ready to dive into your documents. Upload a file or ask me anything!"
+        )
+    },
+    {
+        "category": "greeting",
+        "keywords": [
+            "hello", "hi", "hey", "heyy", "heyyy", "hii", "hiii",
+            "good morning", "good afternoon", "good evening", "good night",
+            "howdy", "sup", "what's up", "whats up", "wassup", "yo",
+            "greetings", "namaste", "vanakkam", "hola",
+        ],
+        "answer": (
+            "Hey there! 👋 Welcome to **Retriva**!\n\n"
+            "I'm your smart document assistant. Upload a PDF, Excel, CSV, or paste a URL — "
+            "and I'll answer anything from it instantly.\n\n"
+            "Want to get started? Try uploading a file from the sidebar! 🚀"
+        )
+    },
+]
 
 def check_faq(query):
-    """Returns FAQ answer if query matches any trigger, else None."""
+    """Returns FAQ answer if query matches any trigger, else None.
+    Uses exact-phrase priority — longer/specific keywords checked first via list order."""
     q = query.lower().strip()
-    for category, data in FAQ_TRIGGERS.items():
-        if any(keyword in q for keyword in data["keywords"]):
-            return data["answer"]
+    for faq in FAQ_TRIGGERS:
+        if any(keyword in q for keyword in faq["keywords"]):
+            return faq["answer"]
     return None
 
 
@@ -512,7 +542,48 @@ def compress_context(chunks, max_tokens=1500):
         compressed.append(chunk)
     return compressed
 
-def chat(query, memory):
+def chat_groq_ai(query, memory):
+    """Groq AI mode — answers from Llama3 general knowledge, no document context."""
+    doc_hints = [
+        "column", "row", "file", "csv", "pdf", "excel", "sheet",
+        "uploaded", "document", "table", "data", "rows", "columns",
+    ]
+    q = query.lower()
+    if any(hint in q for hint in doc_hints):
+        return (
+            "📄 That looks like a document-specific question!\n\n"
+            "Switch to **RAG mode** using the toggle at the top-right, "
+            "upload your file, and I'll answer it from your data."
+        ), []
+
+    system_prompt = """You are Retriva — a smart AI assistant powered by Llama3 (via Groq).
+You are currently in Groq AI mode — answer from your general knowledge.
+Be conversational, helpful, and concise. If you don't know something, say so honestly."""
+
+    messages  = [{"role": "system", "content": system_prompt}]
+    messages += memory
+    messages += [{"role": "user", "content": query}]
+
+    try:
+        response = groq_client.chat.completions.create(
+            model       = "llama-3.3-70b-versatile",
+            messages    = messages,
+            max_tokens  = 512,
+            temperature = 0.5
+        )
+        return response.choices[0].message.content.strip(), []
+    except Exception as e:
+        return f"LLM error: {e}", []
+
+
+def chat(query, memory, mode="rag"):
+
+    # ── Groq AI mode — bypass RAG entirely ───────────────────────────────────
+    if mode == "groq":
+        faq_answer = check_faq(query)
+        if faq_answer:
+            return faq_answer, []
+        return chat_groq_ai(query, memory)
 
     # ── FAQ check — before RAG pipeline ───────────────────────────────────────
     faq_answer = check_faq(query)
@@ -632,6 +703,27 @@ def main():
         margin-top: 2px;
     }
 
+    /* ── Sticky mode toggle ── */
+    .mode-toggle-wrap {
+        position: fixed;
+        top: 14px;
+        right: 20px;
+        z-index: 9999;
+        background: #1a1a2e;
+        border: 1px solid #2a2a4e;
+        border-radius: 999px;
+        padding: 5px 14px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: #a0a0c0;
+        box-shadow: 0 2px 12px rgba(108,99,255,0.15);
+    }
+    .mode-rag  { color: #48CAE4; }
+    .mode-groq { color: #6C63FF; }
+
     /* ── Chat messages ── */
     [data-testid="stChatMessage"] {
         border-radius: 14px !important;
@@ -682,12 +774,27 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Session state ─────────────────────────────────────────────────────────
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "memory" not in st.session_state:
         st.session_state.memory = []
     if "files_loaded" not in st.session_state:
         st.session_state.files_loaded = []
+    if "mode" not in st.session_state:
+        st.session_state.mode = "rag"
+
+    # ── Sticky mode toggle (top-right) ────────────────────────────────────────
+    col_spacer, col_toggle = st.columns([6, 1])
+    with col_toggle:
+        mode_label = "🗂️ RAG" if st.session_state.mode == "rag" else "🤖 Groq AI"
+        if st.button(mode_label, help="Toggle between RAG (document) mode and Groq AI (general knowledge) mode"):
+            st.session_state.mode = "groq" if st.session_state.mode == "rag" else "rag"
+            st.rerun()
+
+    # ── Mode indicator banner ─────────────────────────────────────────────────
+    if st.session_state.mode == "groq":
+        st.info("🤖 **Groq AI mode** — answering from Llama3 general knowledge. Switch to **RAG mode** to query your documents.")
 
     with st.sidebar:
         st.header("📁 Upload Sources")
@@ -780,7 +887,7 @@ def main():
 
         with st.chat_message("assistant", avatar="🔍"):
             with st.spinner("Thinking..."):
-                answer, sources = chat(user_input, st.session_state.memory)
+                answer, sources = chat(user_input, st.session_state.memory, mode=st.session_state.mode)
             st.write(answer)
             if sources:
                 with st.expander("📌 Sources"):
