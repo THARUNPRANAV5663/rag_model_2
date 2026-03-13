@@ -688,6 +688,22 @@ FAQ_TRIGGERS = [
         )
     },
     {
+        "category": "meta",
+        "keywords": [
+            "faq+rag", "faq + rag", "rag+faq", "rag + faq",
+            "how are you built", "how is retriva built", "your architecture",
+            "retriva architecture", "how does retriva work", "your tech stack",
+            "what is your tech stack", "how were you made",
+        ],
+        "answer": (
+            "Great question! 🤓\n\n"
+            "Retriva = **RAG pipeline** + **FAQ system** working together:\n\n"
+            "🔍 **RAG** — Retrieves relevant chunks from your documents using hybrid search (semantic + BM25), reranks them, and generates answers via Llama3\n\n"
+            "💬 **FAQ** — Intercepts common questions (identity, privacy, greetings) before hitting the RAG pipeline — instant responses, zero API calls\n\n"
+            "So yes — `FAQ + RAG = Retriva` 🎯"
+        )
+    },
+    {
         "category": "upload_help",
         "keywords": [
             "can't upload", "cannot upload", "cant upload",
@@ -769,6 +785,10 @@ SUMMARIZE_KEYWORDS = [
     "overview", "give an overview", "give me an overview",
     "brief summary", "key points", "main points", "key details",
     "extract key", "extract information", "extract details",
+    "explain my document", "explain the document", "explain this document",
+    "explain the file", "explain my file", "describe the document",
+    "describe my document", "what is this document", "what is this file",
+    "full extraction", "extract full", "extract the full",
 ]
 
 def is_summarize_query(query):
@@ -887,8 +907,8 @@ Do NOT repeat source citations after every line — mention the source ONCE at t
     # ── System prompt ─────────────────────────────────────────────────────────
     system_prompt = """You are Retriva — a smart document chatbot built by Tharun Pranav K S.
 Answer questions based ONLY on the provided document context.
-If the answer is not found in the context, say: "I couldn't find that information in the provided documents."
-Be conversational, clear and concise.
+If the answer is not found in the context, say clearly and briefly: "I couldn't find that information in the provided documents."
+Be conversational, warm, and concise. Never give one-word answers — always explain briefly.
 DO NOT repeat the source citation after every sentence — mention the source file and page number ONLY ONCE at the very end of your answer in this format: (Source: filename | Page: X)"""
 
     messages  = [{"role": "system", "content": system_prompt}]
@@ -1316,10 +1336,12 @@ def main():
             for f in st.session_state.files_loaded
             if "." in f
         )) or "None"
-        # Determine answer type
+        # Determine answer type accurately
         _, faq_ans = check_faq(user_input)
         if faq_ans:
             answer_type = "FAQ"
+        elif is_summarize_query(user_input):
+            answer_type = "Summary"
         else:
             answer_type = "RAG Pipeline"
 
