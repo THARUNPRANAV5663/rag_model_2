@@ -88,7 +88,7 @@ def load_pdf(file_path):
         if not text:
             pix        = page.get_pixmap()
             img        = Image.open(io.BytesIO(pix.tobytes("png")))
-            text       = pytesseract.image_to_string(img).strip()
+            text       = pytesseract.image_to_string(img, lang="eng").strip()
             extraction = "ocr"
         else:
             extraction = "pymupdf"
@@ -315,6 +315,8 @@ def bm25_search(query, top_k=10):
             })
     return chunks
 
+RERANK_THRESHOLD = -2.0  # drop chunks below this reranker score
+
 def rerank(query, chunks, top_k=4):
     if not chunks:
         return []
@@ -322,7 +324,16 @@ def rerank(query, chunks, top_k=4):
     scores = reranker.predict(pairs)
     for i, chunk in enumerate(chunks):
         chunk["rerank_score"] = float(scores[i])
-    return sorted(chunks, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
+    # Filter out low-confidence chunks to reduce hallucinations
+    filtered = [c for c in chunks if c["rerank_score"] >= RERANK_THRESHOLD]
+    if not filtered:
+        filtered = chunks  # fallback — keep all if everything is below threshold
+    return sorted(filtered, key=lambda x: x["rerank_score"], reverse=True)[:top_k]
+
+def is_simple_query(query):
+    """Skip rewrite for short, clear queries — saves one Groq API call."""
+    words = query.strip().split()
+    return len(words) <= 4 or query.strip().endswith("?") and len(words) <= 6
 
 def retrieve(query, top_k=4):
     _, fresh_collection = get_collection()
@@ -344,6 +355,10 @@ def retrieve(query, top_k=4):
 # ════════════════════════════════════════════════════════════════════════════
 
 def rewrite_query(query, chat_history=[]):
+    # Skip rewrite for simple queries — saves API call and latency
+    if is_simple_query(query):
+        return query
+
     history_text = ""
     if chat_history:
         for msg in chat_history[-3:]:
@@ -365,19 +380,23 @@ Current query: {query}
 
 Rewrite this query:"""
 
-    try:
-        response = groq_client.chat.completions.create(
-            model       = "llama-3.3-70b-versatile",
-            messages    = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt}
-            ],
-            max_tokens  = 100,
-            temperature = 0.1
-        )
-        return response.choices[0].message.content.strip()
-    except:
-        return query
+    for attempt in range(2):  # retry once on failure
+        try:
+            response = groq_client.chat.completions.create(
+                model       = "llama-3.3-70b-versatile",
+                messages    = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt}
+                ],
+                max_tokens  = 100,
+                temperature = 0.1,
+                timeout     = 8,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            if attempt == 1:
+                return query  # fallback to original after retry
+    return query
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -580,16 +599,23 @@ Note: your training data has a cutoff of early 2024 — for very recent events, 
     messages += memory
     messages += [{"role": "user", "content": query}]
 
-    try:
-        response = groq_client.chat.completions.create(
-            model       = "llama-3.3-70b-versatile",
-            messages    = messages,
-            max_tokens  = 512,
-            temperature = 0.5
-        )
-        return response.choices[0].message.content.strip(), []
-    except Exception as e:
-        return f"LLM error: {e}", []
+    for attempt in range(2):
+        try:
+            response = groq_client.chat.completions.create(
+                model       = "llama-3.3-70b-versatile",
+                messages    = messages,
+                max_tokens  = 512,
+                temperature = 0.5,
+                timeout     = 15,
+            )
+            return response.choices[0].message.content.strip(), []
+        except Exception as e:
+            if attempt == 1:
+                err = str(e)
+                if "429" in err:
+                    return "⚠️ Groq rate limit hit — please wait a moment and try again.", []
+                return f"⚠️ LLM error: {err}", []
+    return "⚠️ Something went wrong. Please try again.", []
 
 
 def chat(query, memory, mode="rag"):
@@ -667,16 +693,23 @@ Always mention the source and page number in your answer."""
     messages += memory
     messages += [{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {rewritten}"}]
 
-    try:
-        response = groq_client.chat.completions.create(
-            model       = "llama-3.3-70b-versatile",
-            messages    = messages,
-            max_tokens  = 512,
-            temperature = 0.3
-        )
-        answer = response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"LLM error: {e}", []
+    for attempt in range(2):  # retry once on 429 or timeout
+        try:
+            response = groq_client.chat.completions.create(
+                model       = "llama-3.3-70b-versatile",
+                messages    = messages,
+                max_tokens  = 512,
+                temperature = 0.3,
+                timeout     = 15,
+            )
+            answer = response.choices[0].message.content.strip()
+            break
+        except Exception as e:
+            if attempt == 1:
+                err = str(e)
+                if "429" in err:
+                    return "⚠️ Groq rate limit hit — please wait a moment and try again.", []
+                return f"⚠️ LLM error: {err}", []
 
     query_cache[cache_key] = answer
     return answer, chunks
@@ -691,7 +724,7 @@ def reset_all():
     st.session_state.chat_history = []
     st.session_state.memory       = []
     st.session_state.files_loaded = []
-    query_cache.clear()
+    query_cache.clear()  # invalidate cache on reset
     bm25_index       = None
     bm25_chunks      = []
     processed_hashes = set()
