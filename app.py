@@ -1160,7 +1160,7 @@ def main():
         with st.form("name_form"):
             st.markdown("### 👋 Welcome to Retriva!")
             st.markdown("Enter your name to get started:")
-            name_input = st.text_input("Your name", placeholder="e.g. Tharun")
+            name_input = st.text_input("Your name", placeholder="Enter your name")
             submitted  = st.form_submit_button("Let's go 🚀", use_container_width=True)
             if submitted and name_input.strip():
                 st.session_state.user_name = name_input.strip()
