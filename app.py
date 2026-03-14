@@ -741,18 +741,16 @@ FAQ_TRIGGERS = [
 
 def check_faq(query):
     """Returns (category, answer) if query matches any trigger, else (None, None).
-    Uses word-boundary matching to avoid false positives like 'hi' in 'hiring'."""
+    Uses word-boundary matching for ALL keywords to prevent substring false positives
+    like 'secure' in 'less secure basic llm' triggering the privacy FAQ."""
     q = query.lower().strip()
     for faq in FAQ_TRIGGERS:
         for keyword in faq["keywords"]:
-            # Use word boundary for short keywords (≤4 chars) to avoid substring false positives
-            if len(keyword) <= 4:
-                pattern = r'\b' + re.escape(keyword) + r'\b'
-                if re.search(pattern, q):
-                    return faq["category"], faq["answer"]
-            else:
-                if keyword in q:
-                    return faq["category"], faq["answer"]
+            # Word-boundary match for all keywords — prevents partial matches
+            # e.g. 'secure' won't fire inside 'less secure basic llm'
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            if re.search(pattern, q):
+                return faq["category"], faq["answer"]
     return None, None
 
 
@@ -810,9 +808,16 @@ def chat(query, memory):
         ), []
 
     # ── FAQ check — before RAG pipeline ───────────────────────────────────────
-    _, faq_answer = check_faq(query)
-    if faq_answer:
-        return faq_answer, []
+    # Skip FAQ entirely if a doc is loaded AND query is substantive (>8 words).
+    # Long queries about loaded docs should always go to RAG — never FAQ.
+    # FAQ is only useful for short intent-based queries (greetings, identity, privacy).
+    _, faq_collection = get_collection()
+    doc_is_loaded = faq_collection.count() > 0
+    query_is_long = len(query.strip().split()) > 8
+    if not (doc_is_loaded and query_is_long):
+        _, faq_answer = check_faq(query)
+        if faq_answer:
+            return faq_answer, []
 
     # ── Security ──────────────────────────────────────────────────────────────
     api_key_hints = ["api key", "apikey", "api_key", "secret key", "groq key", "your key", "show key", "give key"]
@@ -824,7 +829,7 @@ def chat(query, memory):
         return str(e), []
 
     # ── No data check ─────────────────────────────────────────────────────────
-    _, fresh_collection = get_collection()
+    fresh_collection = faq_collection  # reuse — already fetched above
     if fresh_collection.count() == 0:
         # Check if user had files loaded before — means session expired
         if st.session_state.get("files_loaded"):
